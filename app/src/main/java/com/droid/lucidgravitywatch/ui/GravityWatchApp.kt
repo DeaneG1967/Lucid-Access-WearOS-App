@@ -48,10 +48,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -88,6 +90,7 @@ import com.droid.lucidgravitywatch.theme.StealthSurface
 import com.droid.lucidgravitywatch.viewmodel.GravityWatchUiState
 import com.droid.lucidgravitywatch.viewmodel.GravityWatchViewModel
 import com.droid.lucidgravitywatch.viewmodel.WatchDialPage
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 @Composable
@@ -539,6 +542,11 @@ private fun SimplifiedWatchDashboard(
     onLogout: () -> Unit
 ) {
     if (vehicle == null) {
+        var showEmptyActions by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) {
+            delay(5_000L)
+            showEmptyActions = true
+        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -547,15 +555,23 @@ private fun SimplifiedWatchDashboard(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = "No Lucid vehicle found (${uiState.userEmail}).",
+                text = "Contacting Cloud...",
                 color = LucidSilver,
-                fontSize = 11.sp,
+                fontSize = 13.2.sp,
                 textAlign = TextAlign.Center
             )
-            Spacer(modifier = Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                SmallChipButton("Refresh", true, onRefresh, "empty_refresh_button")
-                SmallChipButton("Sign Out", false, onLogout, "empty_logout_button")
+            if (showEmptyActions) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    SmallChipButton(
+                        label = "Refresh",
+                        active = true,
+                        onClick = onRefresh,
+                        testTag = "empty_refresh_button",
+                        activeColor = Color.White
+                    )
+                    SmallChipButton("Sign Out", false, onLogout, "empty_logout_button")
+                }
             }
         }
         return
@@ -1078,15 +1094,16 @@ private fun SmallChipButton(
     label: String,
     active: Boolean,
     onClick: () -> Unit,
-    testTag: String
+    testTag: String,
+    activeColor: Color = EurekaGold
 ) {
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(12.dp))
-            .background(if (active) EurekaGold else StealthCard)
+            .background(if (active) activeColor else StealthCard)
             .border(
                 width = 1.dp,
-                color = if (active) EurekaGold else StealthBorder,
+                color = if (active) activeColor else StealthBorder,
                 shape = RoundedCornerShape(12.dp)
             )
             .clickable(onClick = onClick)

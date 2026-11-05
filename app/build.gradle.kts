@@ -19,8 +19,8 @@ android {
         applicationId = "com.droid.wearoslucidwatch"
         minSdk = 26
         targetSdk = 36
-        versionCode = 24
-        versionName = "1.1.1"
+        versionCode = 26
+        versionName = "1.2.1"
     }
 
     signingConfigs {
