@@ -225,6 +225,21 @@ enum class SteeringWheelHeaterLevel(val protoValue: Int, val displayName: String
     }
 }
 
+/**
+ * Whether the steering wheel heater is on. The Air reports only this (its heater level stays
+ * UNKNOWN); cars with heater levels report a level as well.
+ */
+enum class SteeringHeaterStatus(val protoValue: Int) {
+    UNKNOWN(0),
+    OFF(1),
+    ON(2);
+
+    companion object {
+        fun fromProto(value: Int): SteeringHeaterStatus =
+            entries.firstOrNull { it.protoValue == value } ?: UNKNOWN
+    }
+}
+
 enum class LightAction(val protoValue: Int) {
     UNKNOWN(0),
     FLASH(1),
@@ -290,8 +305,23 @@ data class GravityVehicleSnapshot(
     /** When the car sent this state, in Lucid's server clock (epoch ms); unchanged while it sleeps. */
     val lastUpdatedMs: Long,
     /** Raw power-state number as reported, kept for logging values [PowerState] does not know. */
-    val powerStateCode: Int = powerState.protoValue
+    val powerStateCode: Int = powerState.protoValue,
+    val steeringHeaterStatus: SteeringHeaterStatus = SteeringHeaterStatus.UNKNOWN
 ) {
+    /**
+     * True for cars that report no steering heater level (the Air): Lucid Cloud rejects the
+     * other levels for them, so the heater is switched between OFF and LEVEL_2 ("on").
+     */
+    val hasOnOffSteeringHeater: Boolean
+        get() = steeringHeaterLevel == SteeringWheelHeaterLevel.UNKNOWN
+
+    val isSteeringHeaterOn: Boolean
+        get() = if (hasOnOffSteeringHeater) {
+            steeringHeaterStatus == SteeringHeaterStatus.ON
+        } else {
+            steeringHeaterLevel != SteeringWheelHeaterLevel.OFF
+        }
+
     val remainingRangeMiles: Int
         get() = (remainingRangeKm * 0.621371).roundToInt()
 

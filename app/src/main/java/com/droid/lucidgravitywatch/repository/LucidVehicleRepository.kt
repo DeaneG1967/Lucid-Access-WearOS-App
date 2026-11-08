@@ -13,6 +13,7 @@ import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.LucidSession
 import com.droid.lucidgravitywatch.model.PowerState
 import com.droid.lucidgravitywatch.model.SeatClimateMode
+import com.droid.lucidgravitywatch.model.SteeringHeaterStatus
 import com.droid.lucidgravitywatch.model.SteeringWheelHeaterLevel
 import com.droid.lucidgravitywatch.model.VehicleModel
 import com.droid.lucidgravitywatch.model.WalkawayState
@@ -481,7 +482,12 @@ class LucidCloudVehicleRepository(
             )
         }
         val updated = vehicle.copy(
-            steeringHeaterLevel = level,
+            steeringHeaterLevel = if (vehicle.hasOnOffSteeringHeater) vehicle.steeringHeaterLevel else level,
+            steeringHeaterStatus = if (level == SteeringWheelHeaterLevel.OFF) {
+                SteeringHeaterStatus.OFF
+            } else {
+                SteeringHeaterStatus.ON
+            },
             powerState = if (vehicle.powerState.isSleeping) PowerState.CLOUD_1 else vehicle.powerState,
             lastUpdatedMs = System.currentTimeMillis()
         )

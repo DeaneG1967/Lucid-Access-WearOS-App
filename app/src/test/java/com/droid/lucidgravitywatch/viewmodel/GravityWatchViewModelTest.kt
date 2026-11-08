@@ -11,6 +11,7 @@ import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.LucidSession
 import com.droid.lucidgravitywatch.model.PowerState
 import com.droid.lucidgravitywatch.model.SeatClimateMode
+import com.droid.lucidgravitywatch.model.SteeringHeaterStatus
 import com.droid.lucidgravitywatch.model.SteeringWheelHeaterLevel
 import com.droid.lucidgravitywatch.model.VehicleModel
 import com.droid.lucidgravitywatch.model.WalkawayState
@@ -56,6 +57,9 @@ class GravityWatchViewModelTest {
         var wakeHasNoEffect: Boolean = false
         var wakeCount: Int = 0
         var frunkCommandCount: Int = 0
+        var climateCommandCount: Int = 0
+        var chargingCommandCount: Int = 0
+        val steeringLevelsSent = mutableListOf<SteeringWheelHeaterLevel>()
         var deferCloudStateUpdateOnCommand: Boolean = false
         var fetchGate: CompletableDeferred<Unit>? = null
         var currentSelectedVehicleId: String? = "veh-gravity-01"
@@ -206,6 +210,8 @@ class GravityWatchViewModelTest {
             vehicle: GravityVehicleSnapshot,
             temperatureCelsius: Double?
         ): GravityVehicleSnapshot {
+            climateCommandCount++
+            if (deferCloudStateUpdateOnCommand) return vehicle
             snapshot = if (temperatureCelsius == null) {
                 snapshot.copy(hvacPower = HvacPower.OFF)
             } else {
@@ -243,7 +249,15 @@ class GravityWatchViewModelTest {
             vehicle: GravityVehicleSnapshot,
             level: SteeringWheelHeaterLevel
         ): GravityVehicleSnapshot {
-            snapshot = snapshot.copy(steeringHeaterLevel = level)
+            steeringLevelsSent += level
+            snapshot = snapshot.copy(
+                steeringHeaterLevel = if (snapshot.hasOnOffSteeringHeater) snapshot.steeringHeaterLevel else level,
+                steeringHeaterStatus = if (level == SteeringWheelHeaterLevel.OFF) {
+                    SteeringHeaterStatus.OFF
+                } else {
+                    SteeringHeaterStatus.ON
+                }
+            )
             return snapshot
         }
 
@@ -267,6 +281,7 @@ class GravityWatchViewModelTest {
             vehicle: GravityVehicleSnapshot,
             active: Boolean
         ): GravityVehicleSnapshot {
+            chargingCommandCount++
             snapshot = snapshot.copy(
                 chargeState = if (active) ChargeState.CHARGING else ChargeState.CHARGING_STOPPED
             )
@@ -323,8 +338,10 @@ class GravityWatchViewModelTest {
         assertEquals(LockState.LOCKED, viewModel.uiState.value.activeVehicle?.lockState)
 
         // UI preferences and dial switching
-        viewModel.selectDialPage(WatchDialPage.CLOSURES)
-        assertEquals(WatchDialPage.CLOSURES, viewModel.uiState.value.currentDialPage)
+        viewModel.openPage(WatchPage.CLIMATE)
+        assertEquals(WatchPage.CLIMATE, viewModel.uiState.value.currentPage)
+        viewModel.openPage(WatchPage.HOME)
+        assertEquals(WatchPage.HOME, viewModel.uiState.value.currentPage)
         viewModel.toggleTemperatureUnit()
         assertFalse(viewModel.uiState.value.useFahrenheit)
         viewModel.toggleWatchBezelFrame()
@@ -386,10 +403,12 @@ class GravityWatchViewModelTest {
         advanceUntilIdle()
         assertEquals(HvacPower.OFF, viewModel.uiState.value.activeVehicle?.hvacPower)
 
-        // Adjust cabin temperature +1C
-        viewModel.adjustTargetTemperature(deltaCelsius = 1.0)
+        // Setting the cabin temperature also turns climate on (SetCabinTemperature carries power)
+        viewModel.setCabinTargetTemperature(22.0)
         advanceUntilIdle()
         assertEquals(22.0, viewModel.uiState.value.activeVehicle?.targetTempCelsius ?: 0.0, 0.01)
+        assertEquals(HvacPower.PRECONDITION, viewModel.uiState.value.activeVehicle?.hvacPower)
+        assertFalse(viewModel.uiState.value.areControlsLocked)
 
         // Toggle Defrost -> ON and back -> OFF
         viewModel.toggleDefrost()
@@ -402,6 +421,12 @@ class GravityWatchViewModelTest {
         // Cycle Driver Seat Heat -> LOW
         viewModel.cycleDriverSeatHeat()
         advanceUntilIdle()
+        assertEquals(SeatClimateMode.LOW, viewModel.uiState.value.activeVehicle?.driverSeatHeatMode)
+
+        // Cycle Passenger Seat Heat -> LOW, leaving the driver seat as it was
+        viewModel.cyclePassengerSeatHeat()
+        advanceUntilIdle()
+        assertEquals(SeatClimateMode.LOW, viewModel.uiState.value.activeVehicle?.passengerSeatHeatMode)
         assertEquals(SeatClimateMode.LOW, viewModel.uiState.value.activeVehicle?.driverSeatHeatMode)
 
         // Cycle Steering Heater -> LEVEL_1
@@ -872,6 +897,83 @@ class GravityWatchViewModelTest {
         } finally {
             viewModel.suspendPolling()
         }
+    }
+
+    @Test
+    fun climateCommand_keepsControlsFrozenUntilCarReportsClimateOn() = runTest {
+        val repo = FakeLucidVehicleRepository().apply {
+            deferCloudStateUpdateOnCommand = true
+            snapshot = snapshot.copy(powerState = PowerState.CLOUD_1)
+        }
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        runCurrent()
+        try {
+            viewModel.setInteractivePowerState(true)
+            runCurrent()
+
+            viewModel.setCabinTargetTemperature(23.0)
+            runCurrent()
+            assertEquals(1, repo.climateCommandCount)
+            assertEquals("Starting Climate…", viewModel.uiState.value.controlsLockedReason)
+
+            // A poll that still shows climate off keeps the controls frozen
+            advanceTimeBy(GravityWatchViewModel.FAST_POLL_INTERVAL_MS)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.areControlsLocked)
+
+            // The car reports climate on at roughly the requested temperature -> confirmed
+            repo.snapshot = repo.snapshot.copy(hvacPower = HvacPower.ON, targetTempCelsius = 23.0)
+            advanceTimeBy(GravityWatchViewModel.FAST_POLL_INTERVAL_MS)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.areControlsLocked)
+            assertNull(viewModel.uiState.value.errorMessage)
+        } finally {
+            viewModel.suspendPolling()
+        }
+    }
+
+    @Test
+    fun airSteeringHeater_togglesOnAndOff_usingLevel2ForOn() = runTest {
+        val repo = FakeLucidVehicleRepository().apply {
+            snapshot = snapshot.copy(
+                model = VehicleModel.AIR,
+                powerState = PowerState.CLOUD_1,
+                steeringHeaterLevel = SteeringWheelHeaterLevel.UNKNOWN,
+                steeringHeaterStatus = SteeringHeaterStatus.OFF
+            )
+        }
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+
+        viewModel.cycleSteeringWheelHeater()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.activeVehicle!!.isSteeringHeaterOn)
+        assertFalse(viewModel.uiState.value.areControlsLocked)
+
+        viewModel.cycleSteeringWheelHeater()
+        advanceUntilIdle()
+        assertFalse(viewModel.uiState.value.activeVehicle!!.isSteeringHeaterOn)
+        assertEquals(
+            listOf(SteeringWheelHeaterLevel.LEVEL_2, SteeringWheelHeaterLevel.OFF),
+            repo.steeringLevelsSent
+        )
+    }
+
+    @Test
+    fun startCharging_isIgnoredWithoutChargeCable() = runTest {
+        val repo = FakeLucidVehicleRepository().apply {
+            snapshot = snapshot.copy(powerState = PowerState.CLOUD_1, chargeState = ChargeState.NOT_CONNECTED)
+        }
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+
+        viewModel.toggleCharging()
+        advanceUntilIdle()
+        assertEquals(0, repo.chargingCommandCount)
+        assertFalse(viewModel.uiState.value.areControlsLocked)
     }
 
     @Test

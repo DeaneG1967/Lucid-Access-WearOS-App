@@ -156,6 +156,30 @@ class LucidProtobufCodecTest {
     }
 
     @Test
+    fun decodeVehicle_airReportsSteeringHeaterOnOffWithoutLevel() {
+        val bytes = LucidProtobufCodec.buildLoginResponseBytesForTest(
+            uid = "uid-air",
+            idToken = "token",
+            refreshToken = "refresh",
+            gigyaJwt = "jwt",
+            expiryTimeSec = 0,
+            email = "owner@lucidmotors.com",
+            firstName = "A",
+            lastName = "B",
+            vehicleId = "veh-air",
+            vin = "50EA1GBA5NA005210",
+            nickname = "PE GT",
+            modelCode = 1,
+            steeringHeaterLevelCode = 0, // the Air never reports a level
+            steeringHeaterStatusCode = 2 // STEERING_HEATER_STATUS_ON
+        )
+        val air = LucidProtobufCodec.decodeLoginResponse(bytes, LucidRegion.US).vehicles.single()
+        assertEquals(SteeringWheelHeaterLevel.UNKNOWN, air.steeringHeaterLevel)
+        assertTrue(air.hasOnOffSteeringHeater)
+        assertTrue(air.isSteeringHeaterOn)
+    }
+
+    @Test
     fun controlRequests_encodeExactFieldNumbersAndValues() {
         val lockReq = LucidProtobufCodec.encodeDoorLocksControlRequest(
             vehicleId = "veh-gravity-1",

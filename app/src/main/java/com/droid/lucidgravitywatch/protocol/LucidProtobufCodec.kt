@@ -13,6 +13,7 @@ import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.LucidSession
 import com.droid.lucidgravitywatch.model.PowerState
 import com.droid.lucidgravitywatch.model.SeatClimateMode
+import com.droid.lucidgravitywatch.model.SteeringHeaterStatus
 import com.droid.lucidgravitywatch.model.SteeringWheelHeaterLevel
 import com.droid.lucidgravitywatch.model.VehicleModel
 import com.droid.lucidgravitywatch.model.WalkawayState
@@ -400,6 +401,7 @@ object LucidProtobufCodec {
                 driverSeatVentMode = previous.driverSeatVentMode,
                 passengerSeatHeatMode = previous.passengerSeatHeatMode,
                 steeringHeaterLevel = previous.steeringHeaterLevel,
+                steeringHeaterStatus = previous.steeringHeaterStatus,
                 targetTempCelsius = previous.targetTempCelsius
             )
         }
@@ -496,7 +498,9 @@ object LucidProtobufCodec {
         val driverSeatHeatMode = SeatClimateMode.fromProto(seats?.getInt(1) ?: 2)
         val driverSeatVentMode = SeatClimateMode.fromProto(seats?.getInt(5) ?: 2)
         val passengerSeatHeatMode = SeatClimateMode.fromProto(seats?.getInt(7) ?: 2)
-        val steeringHeaterLevel = SteeringWheelHeaterLevel.fromProto(hvac?.getInt(12) ?: 1)
+        // Absent (0) on the Air, which reports only the on/off status in field 11.
+        val steeringHeaterLevel = SteeringWheelHeaterLevel.fromProto(hvac?.getInt(12) ?: 0)
+        val steeringHeaterStatus = SteeringHeaterStatus.fromProto(hvac?.getInt(11) ?: 0)
         val targetTempCelsius = (hvac?.getDouble(13) ?: 0.0).let {
             if (it in 15.0..30.0) it else 21.0
         }
@@ -539,6 +543,7 @@ object LucidProtobufCodec {
             driverSeatVentMode = driverSeatVentMode,
             passengerSeatHeatMode = passengerSeatHeatMode,
             steeringHeaterLevel = steeringHeaterLevel,
+            steeringHeaterStatus = steeringHeaterStatus,
             odometerKm = odometerKm,
             softwareVersion = softwareVersion,
             lastUpdatedMs = lastUpdatedMs
@@ -752,6 +757,7 @@ object LucidProtobufCodec {
         driverSeatVentCode: Int = 2,
         passengerSeatHeatCode: Int = 2,
         steeringHeaterLevelCode: Int = 1,
+        steeringHeaterStatusCode: Int = 0,
         odometerKm: Double = 1200.0,
         softwareVersion: String = "2.5.10",
         lastUpdatedMs: Long = 1792113000000L
@@ -802,6 +808,7 @@ object LucidProtobufCodec {
             driverSeatVentCode = driverSeatVentCode,
             passengerSeatHeatCode = passengerSeatHeatCode,
             steeringHeaterLevelCode = steeringHeaterLevelCode,
+            steeringHeaterStatusCode = steeringHeaterStatusCode,
             odometerKm = odometerKm,
             softwareVersion = softwareVersion,
             lastUpdatedMs = lastUpdatedMs
@@ -891,6 +898,7 @@ object LucidProtobufCodec {
         driverSeatVentCode: Int = 2,
         passengerSeatHeatCode: Int = 2,
         steeringHeaterLevelCode: Int = 1,
+        steeringHeaterStatusCode: Int = 0,
         odometerKm: Double = 1200.0,
         softwareVersion: String = "2.5.10",
         lastUpdatedMs: Long = 1792113000000L
@@ -953,7 +961,8 @@ object LucidProtobufCodec {
             writeIntField(2, defrostCode)
             writeIntField(7, maxAcCode)
             writeBytesField(8, seatsBytes)
-            writeIntField(12, steeringHeaterLevelCode)
+            if (steeringHeaterStatusCode != 0) writeIntField(11, steeringHeaterStatusCode)
+            if (steeringHeaterLevelCode != 0) writeIntField(12, steeringHeaterLevelCode)
             writeDoubleField(13, targetTempC)
         }.toByteArray()
 
