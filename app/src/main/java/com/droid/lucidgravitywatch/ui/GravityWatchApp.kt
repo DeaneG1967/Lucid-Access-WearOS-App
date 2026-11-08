@@ -113,6 +113,8 @@ fun GravityWatchApp(viewModel: GravityWatchViewModel) {
         onToggleClimatePrecondition = viewModel::toggleClimatePrecondition,
         onSetTargetTemperature = viewModel::setCabinTargetTemperature,
         onToggleDefrost = viewModel::toggleDefrost,
+        onToggleMaxAc = viewModel::toggleMaxAc,
+        onSetAllWindows = viewModel::setAllWindows,
         onTapSeat = viewModel::tapSeat,
         onTapSteeringWheel = viewModel::tapSteeringWheel,
         onToggleBatteryPrecon = viewModel::toggleBatteryPreconditioning,
@@ -145,6 +147,8 @@ fun GravityWatchScreen(
     onToggleClimatePrecondition: () -> Unit = {},
     onSetTargetTemperature: (Double) -> Unit = {},
     onToggleDefrost: () -> Unit = {},
+    onToggleMaxAc: () -> Unit = {},
+    onSetAllWindows: (Boolean) -> Unit = {},
     onTapSeat: (ClimateSeat, SeatClimateKind) -> Unit = { _, _ -> },
     onTapSteeringWheel: () -> Unit = {},
     onToggleBatteryPrecon: () -> Unit = {},
@@ -244,6 +248,8 @@ fun GravityWatchScreen(
                             onToggleClimate = onToggleClimatePrecondition,
                             onSetTargetTemperature = onSetTargetTemperature,
                             onToggleDefrost = onToggleDefrost,
+                            onToggleMaxAc = onToggleMaxAc,
+                            onSetAllWindows = onSetAllWindows,
                             onOpenPage = onOpenPage,
                             onToggleTemperatureUnit = onToggleTemperatureUnit
                         )

@@ -35,6 +35,16 @@ object LucidProtobufCodec {
     private const val WIRE_LENGTH_DELIMITED = 2
     private const val WIRE_FIXED32 = 5
 
+    /** Cabin/outside temperatures outside this range are placeholders, not readings. */
+    private val PLAUSIBLE_TEMP_C = -50.0..80.0
+
+    /**
+     * WindowPositionStatus values that count as open: below the short drop (the small drop
+     * frameless windows make when a door opens), vent drop, long drop, fully open, hard stop down,
+     * and anywhere between the short drop and fully open.
+     */
+    private val OPEN_WINDOW_STATUSES = setOf(4, 5, 10, 11, 12, 14)
+
     data class DecodedLoginResult(
         val session: LucidSession,
         val vehicles: List<GravityVehicleSnapshot>
@@ -369,6 +379,14 @@ object LucidProtobufCodec {
                 exteriorTempCelsius = previous.exteriorTempCelsius
             )
         }
+        // A waking Air briefly reported the cabin at 329.4 °C (shown as 625 °F): keep the last
+        // reading instead of an impossible one.
+        if (merged.interiorTempCelsius !in PLAUSIBLE_TEMP_C) {
+            merged = merged.copy(interiorTempCelsius = previous.interiorTempCelsius)
+        }
+        if (merged.exteriorTempCelsius !in PLAUSIBLE_TEMP_C) {
+            merged = merged.copy(exteriorTempCelsius = previous.exteriorTempCelsius)
+        }
         if (missing(4)) {
             merged = merged.copy(
                 lockState = previous.lockState,
@@ -379,7 +397,8 @@ object LucidProtobufCodec {
                 frontLeftDoor = previous.frontLeftDoor,
                 frontRightDoor = previous.frontRightDoor,
                 rearLeftDoor = previous.rearLeftDoor,
-                rearRightDoor = previous.rearRightDoor
+                rearRightDoor = previous.rearRightDoor,
+                windowsOpen = previous.windowsOpen
             )
         }
         if (missing(6)) {
@@ -471,8 +490,10 @@ object LucidProtobufCodec {
         val batteryCapacityKwh = battery?.getDouble(4) ?: 0.0
         val batteryPreconStatus = BatteryPreconStatus.fromProto(battery?.getInt(9) ?: 0)
 
-        val interiorTempCelsius = cabin?.getDouble(1) ?: 21.0
-        val exteriorTempCelsius = cabin?.getDouble(2) ?: 20.0
+        // Out-of-range readings become NaN ("no reading"): merging a GetVehicleState then keeps
+        // the previous value, and with nothing to keep the screen shows "--".
+        val interiorTempCelsius = (cabin?.getDouble(1) ?: 21.0).takeIf { it in PLAUSIBLE_TEMP_C } ?: Double.NaN
+        val exteriorTempCelsius = (cabin?.getDouble(2) ?: 20.0).takeIf { it in PLAUSIBLE_TEMP_C } ?: Double.NaN
 
         val lockState = LockState.fromProto(body?.getInt(1) ?: 0)
         val frunkState = DoorState.fromProto(body?.getInt(2) ?: 0)
@@ -483,6 +504,9 @@ object LucidProtobufCodec {
         val rearRightDoor = DoorState.fromProto(body?.getInt(7) ?: 0)
         val chargePortState = DoorState.fromProto(body?.getInt(8) ?: 0)
         val walkawayState = WalkawayState.fromProto(body?.getInt(9) ?: 0)
+        val windowPositions = body?.getSubMessage(16)
+        val windowsOpen = (body?.getInt(14) ?: 0) == 2 || // ALL_WINDOW_POSITION_OPEN
+            (1..4).any { (windowPositions?.getInt(it) ?: 0) in OPEN_WINDOW_STATUSES }
 
         val odometerKm = chassis?.getDouble(1) ?: 0.0
         val softwareVersion = chassis?.getString(16).orEmpty()
@@ -561,6 +585,7 @@ object LucidProtobufCodec {
             hasHeatedRearSeats = hasHeatedRearSeats,
             passengerSeatVentMode = passengerSeatVentMode,
             hasVentilatedFrontSeats = hasVentilatedFrontSeats,
+            windowsOpen = windowsOpen,
             odometerKm = odometerKm,
             softwareVersion = softwareVersion,
             lastUpdatedMs = lastUpdatedMs
@@ -707,6 +732,14 @@ object LucidProtobufCodec {
         val writer = ProtoWriter()
         writer.writeStringField(1, vehicleId)
         writer.writeIntField(2, status.protoValue)
+        return writer.toByteArray()
+    }
+
+    /** All windows to the vent position ([vent]) or all the way up. */
+    fun encodeAllWindowControlRequest(vehicleId: String, vent: Boolean): ByteArray {
+        val writer = ProtoWriter()
+        writer.writeIntField(1, if (vent) 3 else 2) // WINDOW_SWITCH_STATE_VENT_ALL / _AUTO_UP_ALL
+        writer.writeStringField(2, vehicleId)
         return writer.toByteArray()
     }
 
@@ -885,7 +918,10 @@ object LucidProtobufCodec {
         powerCode: Int = 9,
         lockCode: Int = 2,
         frunkCode: Int = 2,
-        batteryPercent: Double = 80.0
+        batteryPercent: Double = 80.0,
+        interiorTempC: Double = 21.0,
+        exteriorTempC: Double = 18.0,
+        windowStatusCode: Int = 0
     ): ByteArray {
         val vehicleBytes = buildVehicleProtoBytes(
             vehicleId = vehicleId,
@@ -894,7 +930,10 @@ object LucidProtobufCodec {
             powerCode = powerCode,
             lockCode = lockCode,
             frunkCode = frunkCode,
-            batteryPercent = batteryPercent
+            batteryPercent = batteryPercent,
+            interiorTempC = interiorTempC,
+            exteriorTempC = exteriorTempC,
+            windowStatusCode = windowStatusCode
         )
         val stateBytes = parseRawFields(vehicleBytes).bytesList.getValue(4).last()
         return ProtoWriter().apply {
@@ -943,7 +982,8 @@ object LucidProtobufCodec {
         frontVentilationAvailabilityCode: Int = 0,
         odometerKm: Double = 1200.0,
         softwareVersion: String = "2.5.10",
-        lastUpdatedMs: Long = 1792113000000L
+        lastUpdatedMs: Long = 1792113000000L,
+        windowStatusCode: Int = 0
     ): ByteArray {
         val configBytes = ProtoWriter().apply {
             writeStringField(1, vin)
@@ -978,6 +1018,11 @@ object LucidProtobufCodec {
             writeIntField(7, 2)
             writeIntField(8, chargePortCode)
             writeIntField(9, walkawayCode)
+            if (windowStatusCode != 0) {
+                writeBytesField(16, ProtoWriter().apply {
+                    (1..4).forEach { writeIntField(it, windowStatusCode) }
+                }.toByteArray())
+            }
         }.toByteArray()
 
         val chassisBytes = ProtoWriter().apply {

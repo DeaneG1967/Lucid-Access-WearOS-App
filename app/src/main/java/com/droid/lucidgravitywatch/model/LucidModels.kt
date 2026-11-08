@@ -392,7 +392,9 @@ data class GravityVehicleSnapshot(
     val hasHeatedRearSeats: Boolean = false,
     val passengerSeatVentMode: SeatClimateMode = SeatClimateMode.OFF,
     /** From the vehicle config: the front seats are ventilated (cooled). */
-    val hasVentilatedFrontSeats: Boolean = false
+    val hasVentilatedFrontSeats: Boolean = false,
+    /** Any side window is open (vented or lower); see LucidProtobufCodec for the positions counted. */
+    val windowsOpen: Boolean = false
 ) {
     val seatClimate: SeatClimateSettings
         get() = SeatClimateSettings(
@@ -442,13 +444,20 @@ data class GravityVehicleSnapshot(
     val odometerMiles: Int
         get() = (odometerKm * 0.621371).roundToInt()
 
-    fun formatTemperature(celsius: Double, useFahrenheit: Boolean): String {
+    /**
+     * Whole degrees, except [halfDegrees] °C values (setpoints, which move in 0.5 °C steps)
+     * show a half where there is one: "21°C", "21.5°C".
+     */
+    fun formatTemperature(celsius: Double, useFahrenheit: Boolean, halfDegrees: Boolean = false): String {
+        if (celsius.isNaN()) return if (useFahrenheit) "--°F" else "--°C"
         return if (useFahrenheit) {
             val f = (celsius * 9.0 / 5.0 + 32.0).roundToInt()
             "${f}°F"
+        } else if (halfDegrees) {
+            val halves = (celsius * 2.0).roundToInt()
+            if (halves % 2 == 0) "${halves / 2}°C" else "${halves / 2.0}°C"
         } else {
-            val rounded = (celsius * 2.0).roundToInt() / 2.0
-            "${rounded}°C"
+            "${celsius.roundToInt()}°C"
         }
     }
 

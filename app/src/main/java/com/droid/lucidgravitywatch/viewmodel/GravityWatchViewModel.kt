@@ -129,6 +129,20 @@ data class GravityWatchUiState(
         get() = controlsLockedReason != null
 }
 
+/**
+ * Whether climate was on before Max AC or Max Defrost was turned on from the watch. Both modes turn
+ * climate on, and turning them off leaves it on (as the Lucid app does too); turning climate off
+ * also turns off the seat cooling Max AC switched on.
+ */
+private class ClimateRestorePoint(val climateWasOn: Boolean) {
+    /** The user turned climate on/off or set a temperature while the mode was on. */
+    var climateChangedByUser = false
+
+    /** Climate should go back off: it was off before and the user has not touched it since. */
+    fun turnsClimateOff(current: GravityVehicleSnapshot): Boolean =
+        !climateWasOn && !climateChangedByUser && current.hvacPower.isActive
+}
+
 /** A state change a command should produce, described for the log. */
 private class ExpectedCondition(
     val description: String,
@@ -193,6 +207,9 @@ class GravityWatchViewModel(
     private var seatSendJob: Job? = null
     /** True once the seat draft has been sent; it is then kept until the command settles. */
     private var seatDraftSent: Boolean = false
+    /** Set when Max AC / Max Defrost is turned on from the watch; used when turning it off. */
+    private var maxAcRestore: ClimateRestorePoint? = null
+    private var defrostRestore: ClimateRestorePoint? = null
 
     // Report tracking for the active car: report times are Lucid's server clock, so they are only
     // compared with each other; staleness is measured with the watch's monotonic clock.
@@ -527,6 +544,11 @@ class GravityWatchViewModel(
         }
     }
 
+    private fun noteClimateChangedByUser() {
+        maxAcRestore?.climateChangedByUser = true
+        defrostRestore?.climateChangedByUser = true
+    }
+
     /** Unfreezes the controls once no command is in flight or awaiting confirmation from the car. */
     private fun releaseControlsIfSettled() {
         val state = _uiState.value
@@ -694,6 +716,8 @@ class GravityWatchViewModel(
             wakeJob = null
             clearExpectedChanges()
             discardSeatDraft()
+            maxAcRestore = null
+            defrostRestore = null
             awaitingPostCommandPoll = false
             resetReportTracking()
             _uiState.update {
@@ -897,6 +921,7 @@ class GravityWatchViewModel(
     fun toggleClimatePrecondition() {
         val current = controllableVehicle("toggle climate") ?: return
         val turnOn = !current.hvacPower.isActive
+        noteClimateChangedByUser()
         executeConfirmedCommand(
             current,
             actionLabel = if (turnOn) "Starting Climate" else "Stopping Climate",
@@ -916,6 +941,7 @@ class GravityWatchViewModel(
      */
     fun setCabinTargetTemperature(celsius: Double) {
         val current = controllableVehicle("set cabin temperature") ?: return
+        noteClimateChangedByUser()
         val target = celsius.coerceIn(MIN_CABIN_TEMP_C, MAX_CABIN_TEMP_C)
         executeConfirmedCommand(
             current,
@@ -928,16 +954,101 @@ class GravityWatchViewModel(
         }
     }
 
-    fun toggleDefrost() {
-        val current = controllableVehicle("toggle defrost") ?: return
-        val nextDefrost = if (current.defrostState.isEnabled) DefrostState.OFF else DefrostState.ON
+    /** Vents all windows, or closes them all ([vent] false). */
+    fun setAllWindows(vent: Boolean) {
+        val current = controllableVehicle(if (vent) "vent windows" else "close windows") ?: return
         executeConfirmedCommand(
             current,
-            actionLabel = if (nextDefrost == DefrostState.ON) "Enabling Max Defrost" else "Disabling Defrost",
-            expectation = nextDefrost.displayName,
-            isMet = { it.defrostState == nextDefrost }
+            actionLabel = if (vent) "Venting Windows" else "Closing Windows",
+            expectation = "windows ${if (vent) "open" else "closed"}",
+            isMet = { it.windowsOpen == vent }
         ) { vehicle ->
-            repository.setDefrost(vehicle, nextDefrost)
+            repository.setAllWindows(vehicle, vent)
+        }
+    }
+
+    /**
+     * Max AC on, or off. Turning it off also turns climate back off when Max AC turned it on (see
+     * [ClimateRestorePoint]).
+     */
+    fun toggleMaxAc() {
+        val current = controllableVehicle("toggle max AC") ?: return
+        if (!current.maxAcEnabled) {
+            maxAcRestore = ClimateRestorePoint(climateWasOn = current.hvacPower.isActive)
+            executeConfirmedCommand(
+                current,
+                actionLabel = "Enabling Max AC",
+                expectation = "max AC on",
+                isMet = { it.maxAcEnabled }
+            ) { vehicle ->
+                repository.setMaxAc(vehicle, true)
+            }
+            return
+        }
+        val restore = maxAcRestore
+        maxAcRestore = null
+        disableClimateMode(
+            current,
+            actionLabel = "Disabling Max AC",
+            modeName = "max AC",
+            restore = restore,
+            isModeOff = { !it.maxAcEnabled }
+        ) { vehicle ->
+            repository.setMaxAc(vehicle, false)
+        }
+    }
+
+    /** Max Defrost on, or off; like [toggleMaxAc], turning it off turns climate back off. */
+    fun toggleDefrost() {
+        val current = controllableVehicle("toggle defrost") ?: return
+        if (!current.defrostState.isEnabled) {
+            defrostRestore = ClimateRestorePoint(climateWasOn = current.hvacPower.isActive)
+            executeConfirmedCommand(
+                current,
+                actionLabel = "Enabling Max Defrost",
+                expectation = DefrostState.ON.displayName,
+                isMet = { it.defrostState == DefrostState.ON }
+            ) { vehicle ->
+                repository.setDefrost(vehicle, DefrostState.ON)
+            }
+            return
+        }
+        val restore = defrostRestore
+        defrostRestore = null
+        disableClimateMode(
+            current,
+            actionLabel = "Disabling Defrost",
+            modeName = "defrost",
+            restore = restore,
+            isModeOff = { it.defrostState == DefrostState.OFF }
+        ) { vehicle ->
+            repository.setDefrost(vehicle, DefrostState.OFF)
+        }
+    }
+
+    /**
+     * Turns a climate mode off with [turnOff], and climate off too when [restore] says the mode
+     * turned it on; one confirmed command.
+     */
+    private fun disableClimateMode(
+        current: GravityVehicleSnapshot,
+        actionLabel: String,
+        modeName: String,
+        restore: ClimateRestorePoint?,
+        isModeOff: (GravityVehicleSnapshot) -> Boolean,
+        turnOff: suspend (GravityVehicleSnapshot) -> Unit
+    ) {
+        val climateOff = restore?.turnsClimateOff(current) == true
+        executeConfirmedCommand(
+            current,
+            actionLabel = actionLabel,
+            expectation = if (climateOff) "$modeName off; climate off" else "$modeName off",
+            isMet = { polled -> isModeOff(polled) && (!climateOff || !polled.hvacPower.isActive) }
+        ) { vehicle ->
+            turnOff(vehicle)
+            if (climateOff) {
+                repository.setCabinTemperature(vehicle, temperatureCelsius = null)
+            }
         }
     }
 
@@ -1133,6 +1244,8 @@ class GravityWatchViewModel(
         rateLimitBackoffJob?.cancel()
         clearExpectedChanges()
         discardSeatDraft()
+        maxAcRestore = null
+        defrostRestore = null
         awaitingPostCommandPoll = false
         resetReportTracking()
         repository.logout()

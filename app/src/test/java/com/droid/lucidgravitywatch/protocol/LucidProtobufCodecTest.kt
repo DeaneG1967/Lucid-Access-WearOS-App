@@ -16,6 +16,7 @@ import com.droid.lucidgravitywatch.model.VehicleModel
 import com.droid.lucidgravitywatch.model.WalkawayState
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -407,6 +408,40 @@ class LucidProtobufCodecTest {
         assertEquals(LockState.UNLOCKED, decoded.lockState)
         assertEquals(DoorState.OPEN, decoded.frunkState)
         assertEquals(66.0, decoded.batteryPercent, 0.01)
+
+        // Window positions: closed vs vented
+        assertFalse(
+            LucidProtobufCodec.decodeGetVehicleStateResponse(
+                LucidProtobufCodec.buildGetVehicleStateResponseBytesForTest(vehicleId = "v-1", windowStatusCode = 1),
+                decoded
+            ).windowsOpen
+        )
+        assertTrue(
+            LucidProtobufCodec.decodeGetVehicleStateResponse(
+                LucidProtobufCodec.buildGetVehicleStateResponseBytesForTest(vehicleId = "v-1", windowStatusCode = 12),
+                decoded
+            ).windowsOpen
+        )
+        assertArrayEquals(
+            byteArrayOf(0x08, 0x03, 0x12, 0x03) + "v-1".toByteArray(),
+            LucidProtobufCodec.encodeAllWindowControlRequest("v-1", vent = true)
+        )
+        assertArrayEquals(
+            byteArrayOf(0x08, 0x02, 0x12, 0x03) + "v-1".toByteArray(),
+            LucidProtobufCodec.encodeAllWindowControlRequest("v-1", vent = false)
+        )
+
+        // A waking Air reported the cabin at 329.4 °C: the previous reading is kept instead
+        val glitch = LucidProtobufCodec.decodeGetVehicleStateResponse(
+            LucidProtobufCodec.buildGetVehicleStateResponseBytesForTest(
+                vehicleId = "v-1",
+                interiorTempC = 329.4,
+                exteriorTempC = 15.4
+            ),
+            decoded.copy(interiorTempCelsius = 18.9)
+        )
+        assertEquals(18.9, glitch.interiorTempCelsius, 0.01)
+        assertEquals(15.4, glitch.exteriorTempCelsius, 0.01)
 
         // A waking car's partial report (power + body only) keeps the other sections' values
         val partialState = LucidProtobufCodec.ProtoWriter().apply {

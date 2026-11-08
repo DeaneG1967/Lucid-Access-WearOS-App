@@ -457,7 +457,7 @@ class GravityWatchAppUiTest {
         }
 
         // 21 °C inside and target, shown in °F; climate is preconditioning
-        composeTestRule.onNodeWithTag("climate_inside_temp").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("climate_unit_toggle").assertIsDisplayed()
         composeTestRule.onNodeWithTag("climate_power_toggle").performClick()
         assertEquals(1, climateToggled)
 
@@ -486,6 +486,38 @@ class GravityWatchAppUiTest {
         assertEquals(listOf(WatchPage.SEAT_HEAT), pages)
         // sampleGravity has no ventilated seats
         composeTestRule.onNodeWithTag("climate_seat_cooling_button").assertDoesNotExist()
+    }
+
+    @Test
+    fun climatePage_ventingWindowsAsksFirst_closingIsOneTap() {
+        val vehicle = mutableStateOf(sampleGravity)
+        val choices = mutableListOf<Boolean>()
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(WatchPage.CLIMATE, vehicle.value),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onSetAllWindows = { choices += it }
+                )
+            }
+        }
+
+        // Closed: venting asks first; cancel sends nothing
+        composeTestRule.onNodeWithTag("climate_windows_button").performClick()
+        composeTestRule.onNodeWithText("Vent Windows?").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
+        assertTrue(choices.isEmpty())
+        composeTestRule.onNodeWithTag("climate_windows_button").performClick()
+        composeTestRule.onNodeWithTag("confirmation_confirm_button").performClick()
+        assertEquals(listOf(true), choices)
+
+        // Open: one tap closes, no pop-up
+        vehicle.value = sampleGravity.copy(windowsOpen = true)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("climate_windows_button").performClick()
+        composeTestRule.onNodeWithTag("confirmation_popup_overlay").assertDoesNotExist()
+        assertEquals(listOf(true, false), choices)
     }
 
     @Test

@@ -64,6 +64,8 @@ class GravityWatchViewModelTest {
         val steeringLevelsSent = mutableListOf<SteeringWheelHeaterLevel>()
         val rearHeatSent = mutableListOf<SeatClimateMode?>()
         val passengerVentSent = mutableListOf<SeatClimateMode?>()
+        /** Behave like a Lucid Air: Max AC and Max Defrost also turn climate on, Max AC cools the driver seat. */
+        var airClimateSideEffects = false
         var deferCloudStateUpdateOnCommand: Boolean = false
         var fetchGate: CompletableDeferred<Unit>? = null
         var currentSelectedVehicleId: String? = "veh-gravity-01"
@@ -217,7 +219,12 @@ class GravityWatchViewModelTest {
             climateCommandCount++
             if (deferCloudStateUpdateOnCommand) return vehicle
             snapshot = if (temperatureCelsius == null) {
-                snapshot.copy(hvacPower = HvacPower.OFF)
+                // On the Air, climate off also turns the seat cooling off
+                snapshot.copy(
+                    hvacPower = HvacPower.OFF,
+                    driverSeatVentMode = if (airClimateSideEffects) SeatClimateMode.OFF else snapshot.driverSeatVentMode,
+                    passengerSeatVentMode = if (airClimateSideEffects) SeatClimateMode.OFF else snapshot.passengerSeatVentMode
+                )
             } else {
                 snapshot.copy(
                     targetTempCelsius = temperatureCelsius,
@@ -232,6 +239,28 @@ class GravityWatchViewModelTest {
             defrostState: DefrostState
         ): GravityVehicleSnapshot {
             snapshot = snapshot.copy(defrostState = defrostState)
+            if (defrostState == DefrostState.ON && airClimateSideEffects) {
+                snapshot = snapshot.copy(hvacPower = HvacPower.PRECONDITION)
+            }
+            return snapshot
+        }
+
+        override suspend fun setAllWindows(
+            vehicle: GravityVehicleSnapshot,
+            vent: Boolean
+        ): GravityVehicleSnapshot {
+            snapshot = snapshot.copy(windowsOpen = vent)
+            return snapshot
+        }
+
+        override suspend fun setMaxAc(
+            vehicle: GravityVehicleSnapshot,
+            enabled: Boolean
+        ): GravityVehicleSnapshot {
+            snapshot = snapshot.copy(maxAcEnabled = enabled)
+            if (enabled && airClimateSideEffects) {
+                snapshot = snapshot.copy(hvacPower = HvacPower.PRECONDITION, driverSeatVentMode = SeatClimateMode.HIGH)
+            }
             return snapshot
         }
 
@@ -427,6 +456,22 @@ class GravityWatchViewModelTest {
         viewModel.toggleDefrost()
         advanceUntilIdle()
         assertEquals(DefrostState.OFF, viewModel.uiState.value.activeVehicle?.defrostState)
+
+        // Vent all windows, then close them
+        viewModel.setAllWindows(vent = true)
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.activeVehicle!!.windowsOpen)
+        viewModel.setAllWindows(vent = false)
+        advanceUntilIdle()
+        assertFalse(viewModel.uiState.value.activeVehicle!!.windowsOpen)
+
+        // Toggle Max AC -> on and back -> off
+        viewModel.toggleMaxAc()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.activeVehicle!!.maxAcEnabled)
+        viewModel.toggleMaxAc()
+        advanceUntilIdle()
+        assertFalse(viewModel.uiState.value.activeVehicle!!.maxAcEnabled)
 
         // Steering wheel tap on a car with heater levels -> LEVEL_3 (taps go High first)
         viewModel.tapSteeringWheel()
@@ -1040,6 +1085,99 @@ class GravityWatchViewModelTest {
         // Unchanged rear heat and passenger cooling are not sent
         assertEquals(listOf<SeatClimateMode?>(null), repo.rearHeatSent)
         assertEquals(listOf<SeatClimateMode?>(null), repo.passengerVentSent)
+    }
+
+    private fun airClimateRepo(climateOn: Boolean = false) = seatTestRepo().apply {
+        airClimateSideEffects = true
+        snapshot = snapshot.copy(
+            hvacPower = if (climateOn) HvacPower.ON else HvacPower.OFF,
+            maxAcEnabled = false,
+            defrostState = DefrostState.OFF
+        )
+    }
+
+    @Test
+    fun maxAcOff_putsBackWhatMaxAcChanged() = runTest {
+        val repo = airClimateRepo()
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+
+        viewModel.toggleMaxAc()
+        advanceUntilIdle()
+        var car = viewModel.uiState.value.activeVehicle!!
+        assertTrue(car.maxAcEnabled)
+        assertTrue(car.hvacPower.isActive)
+        assertEquals(SeatClimateMode.HIGH, car.driverSeatVentMode)
+
+        // One tap off: Max AC off and climate back off, which also ends the seat cooling
+        viewModel.toggleMaxAc()
+        advanceUntilIdle()
+        car = viewModel.uiState.value.activeVehicle!!
+        assertFalse(car.maxAcEnabled)
+        assertEquals(SeatClimateMode.OFF, car.driverSeatVentMode)
+        assertFalse(car.hvacPower.isActive)
+        assertFalse(viewModel.uiState.value.areControlsLocked)
+        assertNull(viewModel.uiState.value.errorMessage)
+    }
+
+    @Test
+    fun maxAcOff_leavesClimateOn_whenItWasOnBefore() = runTest {
+        val repo = airClimateRepo(climateOn = true)
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+
+        viewModel.toggleMaxAc()
+        advanceUntilIdle()
+        val climateCommandsBefore = repo.climateCommandCount
+        viewModel.toggleMaxAc()
+        advanceUntilIdle()
+        val car = viewModel.uiState.value.activeVehicle!!
+        assertFalse(car.maxAcEnabled)
+        assertTrue(car.hvacPower.isActive)
+        assertEquals(climateCommandsBefore, repo.climateCommandCount)
+    }
+
+    @Test
+    fun maxAcOff_leavesClimateOn_whenTheUserChangedClimateMeanwhile() = runTest {
+        val repo = airClimateRepo()
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+
+        viewModel.toggleMaxAc()
+        advanceUntilIdle()
+        viewModel.setCabinTargetTemperature(20.0)
+        advanceUntilIdle()
+        viewModel.toggleMaxAc()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.activeVehicle!!.hvacPower.isActive)
+    }
+
+    @Test
+    fun defrostOff_turnsClimateBackOff_unlessTheUserTurnedItOn() = runTest {
+        val repo = airClimateRepo()
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+
+        viewModel.toggleDefrost()
+        advanceUntilIdle()
+        assertTrue(viewModel.uiState.value.activeVehicle!!.hvacPower.isActive)
+        viewModel.toggleDefrost()
+        advanceUntilIdle()
+        assertEquals(DefrostState.OFF, viewModel.uiState.value.activeVehicle!!.defrostState)
+        assertFalse(viewModel.uiState.value.activeVehicle!!.hvacPower.isActive)
+
+        // Without a restore point (defrost turned on elsewhere) only defrost goes off
+        repo.snapshot = repo.snapshot.copy(defrostState = DefrostState.ON, hvacPower = HvacPower.PRECONDITION)
+        viewModel.refreshVehicles()
+        advanceUntilIdle()
+        viewModel.toggleDefrost()
+        advanceUntilIdle()
+        assertEquals(DefrostState.OFF, viewModel.uiState.value.activeVehicle!!.defrostState)
+        assertTrue(viewModel.uiState.value.activeVehicle!!.hvacPower.isActive)
     }
 
     @Test

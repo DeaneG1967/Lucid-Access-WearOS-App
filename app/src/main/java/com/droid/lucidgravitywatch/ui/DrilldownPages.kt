@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -90,8 +91,8 @@ private const val ROTARY_PIXELS_PER_STEP = 40f
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Climate drill-down: inside temperature, target temperature, then climate on/off and max defrost
- * side by side; buttons for the seat heat and seat cooling diagrams further down the list.
+ * Climate drill-down on one screen: inside temperature, a pill combining climate power and the
+ * target temperature, then round buttons for seat heat, seat cooling and max defrost.
  */
 @Composable
 internal fun ClimatePage(
@@ -100,10 +101,13 @@ internal fun ClimatePage(
     onToggleClimate: () -> Unit,
     onSetTargetTemperature: (Double) -> Unit,
     onToggleDefrost: () -> Unit,
+    onToggleMaxAc: () -> Unit,
+    onSetAllWindows: (Boolean) -> Unit,
     onOpenPage: (WatchPage) -> Unit,
     onToggleTemperatureUnit: () -> Unit
 ) {
     var editingTarget by rememberSaveable { mutableStateOf(false) }
+    var confirmVent by rememberSaveable { mutableStateOf(false) }
     val controlsEnabled = uiState.controlsLockedReason == null
     val useF = uiState.useFahrenheit
     val climateOn = vehicle.hvacPower.isActive
@@ -129,9 +133,23 @@ internal fun ClimatePage(
         return
     }
 
-    DrilldownList(title = "CLIMATE", uiState = uiState, testTag = "climate_page") {
+    if (!controlsEnabled && confirmVent) confirmVent = false
+
+    Box(modifier = Modifier.fillMaxSize()) {
+    // No title, so the whole page fits on one round screen; status messages still show at the top.
+    DrilldownList(title = null, uiState = uiState, testTag = "climate_page", topPadding = 18.dp) {
         item {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // Inside and outside on one line: big inside temperature, smaller outside one.
+            // Tapping it switches between °F and °C.
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable(onClick = onToggleTemperatureUnit)
+                    .padding(horizontal = 6.dp)
+                    .semantics { contentDescription = "Temperatures, tap to switch units" }
+                    .testTag("climate_unit_toggle"),
+                verticalAlignment = Alignment.Bottom
+            ) {
                 Text(
                     text = vehicle.formatTemperature(vehicle.interiorTempCelsius, useF),
                     color = Color.White,
@@ -141,76 +159,116 @@ internal fun ClimatePage(
                     modifier = Modifier.testTag("climate_inside_temp")
                 )
                 Text(
-                    text = "Outside ${vehicle.formatTemperature(vehicle.exteriorTempCelsius, useF)}",
+                    text = " in",
                     color = LucidSilver,
-                    fontSize = 10.sp
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = vehicle.formatTemperature(vehicle.exteriorTempCelsius, useF),
+                    color = LucidPlatinum,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier
+                        .padding(bottom = 2.dp)
+                        .testTag("climate_outside_temp")
+                )
+                Text(
+                    text = " out",
+                    color = LucidSilver,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 4.dp)
                 )
             }
         }
         item {
-            ValueRow(
-                label = "Target",
-                value = vehicle.formatTemperature(vehicle.targetTempCelsius, useF),
-                enabled = controlsEnabled,
-                onClick = { editingTarget = true },
-                testTag = "climate_target_row"
-            )
-        }
-        item {
-            // Climate and Max Defrost side by side; each shows its state underneath.
+            // Climate power + target, with the one-tap Max Defrost and Max AC toggles beside it.
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                ToggleRow(
-                    label = "Climate",
-                    detail = if (climateOn) "On" else "Off",
-                    isOn = climateOn,
+                ClimateTargetPill(
+                    target = vehicle.formatTemperature(vehicle.targetTempCelsius, useF, halfDegrees = true),
+                    climateOn = climateOn,
                     enabled = controlsEnabled,
-                    onClick = onToggleClimate,
-                    testTag = "climate_power_toggle",
-                    modifier = Modifier.weight(1f),
-                    horizontalPadding = 6.dp
+                    onTogglePower = onToggleClimate,
+                    onEditTarget = { editingTarget = true },
+                    modifier = Modifier.weight(1f)
                 )
-                ToggleRow(
-                    label = "Defrost",
-                    detail = if (vehicle.defrostState.isEnabled) "Max" else "Off",
-                    isOn = vehicle.defrostState.isEnabled,
+                RoundModeButton(
+                    iconRes = R.drawable.climate_defrost_24px,
+                    label = null,
+                    contentDesc = "Max Defrost",
+                    isActive = vehicle.defrostState.isEnabled,
+                    accent = AuroraGreen,
                     enabled = controlsEnabled,
                     onClick = onToggleDefrost,
                     testTag = "climate_defrost_toggle",
-                    modifier = Modifier.weight(1f),
-                    horizontalPadding = 6.dp
+                    size = 46.dp
+                )
+                RoundModeButton(
+                    iconRes = R.drawable.climate_max_ac_24px,
+                    label = null,
+                    contentDesc = "Max AC",
+                    isActive = vehicle.maxAcEnabled,
+                    accent = SeatCoolBlue,
+                    enabled = controlsEnabled,
+                    onClick = onToggleMaxAc,
+                    testTag = "climate_max_ac_toggle",
+                    size = 46.dp
                 )
             }
         }
-        item { SectionLabel("SEATS & WHEEL") }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
                 val seats = vehicle.seatClimate
-                SeatModeButton(
-                    kind = SeatClimateKind.HEAT,
+                RoundModeButton(
+                    iconRes = R.drawable.seat_heat_24px,
+                    label = null,
+                    contentDesc = "Seat Heat",
                     isActive = ClimateSeat.entries.any { seats.level(it, SeatClimateKind.HEAT).isOn } ||
                         vehicle.isSteeringHeaterOn,
-                    onClick = { onOpenPage(WatchPage.SEAT_HEAT) }
+                    accent = SeatClimateKind.HEAT.accent(),
+                    onClick = { onOpenPage(WatchPage.SEAT_HEAT) },
+                    testTag = "climate_seat_heat_button"
                 )
                 if (vehicle.showsSeatCooling) {
-                    SeatModeButton(
-                        kind = SeatClimateKind.COOL,
+                    RoundModeButton(
+                        iconRes = R.drawable.seat_cool_24px,
+                        label = null,
+                        contentDesc = "Seat Cooling",
                         isActive = ClimateSeat.entries.any { seats.level(it, SeatClimateKind.COOL).isOn },
-                        onClick = { onOpenPage(WatchPage.SEAT_COOLING) }
+                        accent = SeatClimateKind.COOL.accent(),
+                        onClick = { onOpenPage(WatchPage.SEAT_COOLING) },
+                        testTag = "climate_seat_cooling_button"
                     )
                 }
+                // Like the lock: closing is one tap; venting (a security risk) asks first.
+                RoundModeButton(
+                    iconRes = R.drawable.climate_windows_24px,
+                    label = null,
+                    contentDesc = if (vehicle.windowsOpen) "Windows open" else "Windows closed",
+                    isActive = vehicle.windowsOpen,
+                    accent = StatusYellow,
+                    enabled = controlsEnabled,
+                    onClick = { if (vehicle.windowsOpen) onSetAllWindows(false) else confirmVent = true },
+                    testTag = "climate_windows_button"
+                )
             }
         }
-        item {
-            SmallChipButton(
-                label = if (useF) "Show °C" else "Show °F",
-                active = false,
-                onClick = onToggleTemperatureUnit,
-                testTag = "climate_unit_toggle"
-            )
-        }
+    }
+    if (confirmVent) {
+        ConfirmationOverlay(
+            prompt = "Vent Windows?",
+            onCancel = { confirmVent = false },
+            onConfirm = {
+                confirmVent = false
+                onSetAllWindows(true)
+            }
+        )
+    }
     }
 }
 
@@ -231,7 +289,7 @@ private enum class TemperatureScale(val min: Double, val max: Double, val step: 
 
     fun format(value: Double): String = when (this) {
         FAHRENHEIT -> "${value.roundToInt()}°F"
-        CELSIUS -> "$value°C"
+        CELSIUS -> if (value % 1.0 == 0.0) "${value.toInt()}°C" else "$value°C"
     }
 
     companion object {
@@ -460,9 +518,10 @@ internal fun SwipeBackBox(
 /** A crown-scrollable, round-screen list with the page title and status line at the top. */
 @Composable
 private fun DrilldownList(
-    title: String,
+    title: String?,
     uiState: GravityWatchUiState,
     testTag: String,
+    topPadding: Dp = 20.dp,
     content: ScalingLazyListScope.() -> Unit
 ) {
     // Start with the title at the top edge instead of centered, so the first screen shows as
@@ -473,14 +532,14 @@ private fun DrilldownList(
         modifier = Modifier
             .fillMaxSize()
             .testTag(testTag),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 20.dp),
+        contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = topPadding, bottom = 20.dp),
         autoCentering = null,
         verticalArrangement = Arrangement.spacedBy(5.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         item {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                PageTitle(title)
+                if (title != null) PageTitle(title)
                 PageStatusLine(uiState)
             }
         }
@@ -567,33 +626,122 @@ private fun ValueRow(
 internal fun Color.dimmedUnless(enabled: Boolean): Color =
     if (enabled) this else copy(alpha = alpha * 0.4f)
 
-/** Opens the seat heat or seat cooling diagram; ringed while any seat is using that mode. */
+/**
+ * Climate power and target temperature in one pill: the round button on the left turns climate
+ * on/off; the rest shows the target and opens the temperature editor. Outlined green while on.
+ */
 @Composable
-private fun SeatModeButton(kind: SeatClimateKind, isActive: Boolean, onClick: () -> Unit) {
-    val accent = kind.accent()
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+private fun ClimateTargetPill(
+    target: String,
+    climateOn: Boolean,
+    enabled: Boolean,
+    onTogglePower: () -> Unit,
+    onEditTarget: () -> Unit,
+    modifier: Modifier = Modifier
+) = key(enabled, climateOn) {
+    val shape = RoundedCornerShape(26.dp)
+    Row(
+        modifier = modifier
+            .height(50.dp)
+            .clip(shape)
+            .background((if (climateOn) AuroraGreen.copy(alpha = 0.12f) else StealthCard).dimmedUnless(enabled))
+            .border(
+                if (climateOn) 1.5.dp else 1.dp,
+                (if (climateOn) AuroraGreen else StealthBorder).dimmedUnless(enabled),
+                shape
+            )
+            .padding(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(42.dp)
                 .clip(CircleShape)
-                .background(StealthCard)
-                .border(if (isActive) 2.dp else 1.dp, if (isActive) accent else StealthBorder, CircleShape)
-                .clickable(onClick = onClick)
-                .semantics { contentDescription = "Seat ${kind.label}" }
-                .testTag(if (kind == SeatClimateKind.HEAT) "climate_seat_heat_button" else "climate_seat_cooling_button"),
+                .background((if (climateOn) AuroraGreen.copy(alpha = 0.25f) else StealthSurface).dimmedUnless(enabled))
+                .clickable(enabled = enabled, onClick = onTogglePower)
+                .semantics { contentDescription = "Climate ${if (climateOn) "on" else "off"}" }
+                .testTag("climate_power_toggle"),
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                painter = painterResource(
-                    id = if (kind == SeatClimateKind.HEAT) R.drawable.seat_heat_24px else R.drawable.seat_cool_24px
-                ),
+                painter = painterResource(id = R.drawable.climate_power_24px),
                 contentDescription = null,
-                tint = if (isActive) accent else LucidPlatinum,
+                tint = (if (climateOn) AuroraGreen else LucidPlatinum).dimmedUnless(enabled),
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        // Small TGT label stacked over the value, so the pill can stay narrow.
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .clip(RoundedCornerShape(22.dp))
+                .clickable(enabled = enabled, onClick = onEditTarget)
+                .testTag("climate_target_row"),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "TGT",
+                color = LucidSilver.dimmedUnless(enabled),
+                fontSize = 8.sp,
+                lineHeight = 8.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                maxLines = 1
+            )
+            Text(
+                text = target,
+                color = Color.White.dimmedUnless(enabled),
+                fontSize = 17.sp,
+                lineHeight = 18.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/** Round icon button, optionally labelled underneath; ringed in [accent] while [isActive]. */
+@Composable
+private fun RoundModeButton(
+    iconRes: Int,
+    label: String?,
+    isActive: Boolean,
+    accent: Color,
+    onClick: () -> Unit,
+    testTag: String,
+    enabled: Boolean = true,
+    contentDesc: String = label.orEmpty(),
+    size: Dp = 44.dp
+) = key(enabled, isActive) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(StealthCard.dimmedUnless(enabled))
+                .border(
+                    if (isActive) 2.dp else 1.dp,
+                    (if (isActive) accent else StealthBorder).dimmedUnless(enabled),
+                    CircleShape
+                )
+                .clickable(enabled = enabled, onClick = onClick)
+                .semantics { contentDescription = "$contentDesc ${if (isActive) "on" else "off"}" }
+                .testTag(testTag),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                painter = painterResource(id = iconRes),
+                contentDescription = null,
+                tint = (if (isActive) accent else LucidPlatinum).dimmedUnless(enabled),
                 modifier = Modifier.size(24.dp)
             )
         }
-        Spacer(modifier = Modifier.height(3.dp))
-        Text(kind.label, color = LucidSilver, fontSize = 10.sp)
+        if (label != null) {
+            Spacer(modifier = Modifier.height(3.dp))
+            Text(label, color = LucidSilver.dimmedUnless(enabled), fontSize = 10.sp)
+        }
     }
 }
 
