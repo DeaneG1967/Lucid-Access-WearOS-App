@@ -205,6 +205,13 @@ enum class SeatClimateMode(val protoValue: Int, val displayName: String) {
     }
 }
 
+/** The seat heaters the watch controls; the rear seats share one setting. */
+enum class HeatedSeat(val label: String) {
+    DRIVER("Driver"),
+    PASSENGER("Passenger"),
+    REAR("Rear")
+}
+
 enum class SteeringWheelHeaterLevel(val protoValue: Int, val displayName: String) {
     UNKNOWN(0, "Off"),
     OFF(1, "Off"),
@@ -306,8 +313,22 @@ data class GravityVehicleSnapshot(
     val lastUpdatedMs: Long,
     /** Raw power-state number as reported, kept for logging values [PowerState] does not know. */
     val powerStateCode: Int = powerState.protoValue,
-    val steeringHeaterStatus: SteeringHeaterStatus = SteeringHeaterStatus.UNKNOWN
+    val steeringHeaterStatus: SteeringHeaterStatus = SteeringHeaterStatus.UNKNOWN,
+    /** Rear seat heat as reported for the rear-left seat; the watch sets all rear seats together. */
+    val rearSeatHeatMode: SeatClimateMode = SeatClimateMode.UNKNOWN,
+    /** From the vehicle config: the car has heated second-row seats. */
+    val hasHeatedRearSeats: Boolean = false
 ) {
+    /** Show rear seat heat when the config says the car has it, or the car reports a rear level. */
+    val showsRearSeatHeat: Boolean
+        get() = hasHeatedRearSeats || rearSeatHeatMode != SeatClimateMode.UNKNOWN
+
+    fun seatHeatMode(seat: HeatedSeat): SeatClimateMode = when (seat) {
+        HeatedSeat.DRIVER -> driverSeatHeatMode
+        HeatedSeat.PASSENGER -> passengerSeatHeatMode
+        HeatedSeat.REAR -> rearSeatHeatMode
+    }
+
     /**
      * True for cars that report no steering heater level (the Air): Lucid Cloud rejects the
      * other levels for them, so the heater is switched between OFF and LEVEL_2 ("on").

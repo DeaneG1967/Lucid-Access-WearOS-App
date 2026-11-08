@@ -180,6 +180,49 @@ class LucidProtobufCodecTest {
     }
 
     @Test
+    fun rearSeatHeat_decodesFromStateAndConfig_andEncodesAllThreeRearSeats() {
+        val bytes = LucidProtobufCodec.buildLoginResponseBytesForTest(
+            uid = "uid-air",
+            idToken = "token",
+            refreshToken = "refresh",
+            gigyaJwt = "jwt",
+            expiryTimeSec = 0,
+            email = "owner@lucidmotors.com",
+            firstName = "A",
+            lastName = "B",
+            vehicleId = "veh-air",
+            vin = "50EA1GBA5NA005210",
+            nickname = "PE GT",
+            rearSeatHeatCode = 4, // SEAT_CLIMATE_MODE_MEDIUM
+            rearHeatedSeatsAvailabilityCode = 2 // SECOND_ROW_HEATED_SEATS_AVAILABLE
+        )
+        val car = LucidProtobufCodec.decodeLoginResponse(bytes, LucidRegion.US).vehicles.single()
+        assertEquals(SeatClimateMode.MEDIUM, car.rearSeatHeatMode)
+        assertTrue(car.hasHeatedRearSeats)
+
+        val withRear = LucidProtobufCodec.parseRawFields(
+            LucidProtobufCodec.encodeSeatClimateControlRequest(
+                vehicleId = "veh-air",
+                driverHeat = SeatClimateMode.OFF,
+                driverVent = SeatClimateMode.OFF,
+                passengerHeat = SeatClimateMode.OFF,
+                rearHeat = SeatClimateMode.HIGH
+            )
+        )
+        assertEquals(listOf(5L, 5L, 5L), listOf(14, 15, 16).map { withRear.getVarint(it) })
+
+        val frontOnly = LucidProtobufCodec.parseRawFields(
+            LucidProtobufCodec.encodeSeatClimateControlRequest(
+                vehicleId = "veh-air",
+                driverHeat = SeatClimateMode.LOW,
+                driverVent = SeatClimateMode.OFF,
+                passengerHeat = SeatClimateMode.OFF
+            )
+        )
+        assertTrue(listOf(14, 15, 16).all { frontOnly.varints[it] == null })
+    }
+
+    @Test
     fun controlRequests_encodeExactFieldNumbersAndValues() {
         val lockReq = LucidProtobufCodec.encodeDoorLocksControlRequest(
             vehicleId = "veh-gravity-1",

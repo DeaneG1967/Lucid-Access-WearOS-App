@@ -61,6 +61,8 @@ import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import com.droid.lucidgravitywatch.R
 import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
+import com.droid.lucidgravitywatch.model.HeatedSeat
+import com.droid.lucidgravitywatch.model.SeatClimateMode
 import com.droid.lucidgravitywatch.theme.AuroraGreen
 import com.droid.lucidgravitywatch.theme.CrimsonAlert
 import com.droid.lucidgravitywatch.theme.EurekaGold
@@ -95,8 +97,7 @@ internal fun ClimatePage(
     onToggleClimate: () -> Unit,
     onSetTargetTemperature: (Double) -> Unit,
     onToggleDefrost: () -> Unit,
-    onCycleDriverSeatHeat: () -> Unit,
-    onCyclePassengerSeatHeat: () -> Unit,
+    onSetSeatHeat: (HeatedSeat, SeatClimateMode) -> Unit,
     onCycleSteeringHeater: () -> Unit,
     onToggleTemperatureUnit: () -> Unit
 ) {
@@ -173,25 +174,21 @@ internal fun ClimatePage(
             )
         }
         item { SectionLabel("SEATS & WHEEL") }
-        item {
-            ValueRow(
-                label = "Driver seat",
-                value = vehicle.driverSeatHeatMode.displayName,
-                highlighted = vehicle.driverSeatHeatMode.displayName != "Off",
-                enabled = controlsEnabled,
-                onClick = onCycleDriverSeatHeat,
-                testTag = "climate_driver_seat"
-            )
+        val seats = buildList {
+            add(HeatedSeat.DRIVER)
+            add(HeatedSeat.PASSENGER)
+            if (vehicle.showsRearSeatHeat) add(HeatedSeat.REAR)
         }
-        item {
-            ValueRow(
-                label = "Passenger seat",
-                value = vehicle.passengerSeatHeatMode.displayName,
-                highlighted = vehicle.passengerSeatHeatMode.displayName != "Off",
-                enabled = controlsEnabled,
-                onClick = onCyclePassengerSeatHeat,
-                testTag = "climate_passenger_seat"
-            )
+        seats.forEach { seat ->
+            item(key = "seat_${seat.name}") {
+                SeatLevelRow(
+                    label = if (seat == HeatedSeat.REAR) "Rear seats" else "${seat.label} seat",
+                    current = vehicle.seatHeatMode(seat),
+                    enabled = controlsEnabled,
+                    onSelect = { mode -> onSetSeatHeat(seat, mode) },
+                    testTag = "climate_seat_${seat.name.lowercase()}"
+                )
+            }
         }
         item {
             ValueRow(
@@ -548,28 +545,94 @@ private fun ValueRow(
     onClick: () -> Unit,
     testTag: String,
     highlighted: Boolean = false
-) {
+) = key(enabled, highlighted) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
-            .background(StealthCard)
-            .border(1.dp, if (highlighted) EurekaGold else StealthBorder, RoundedCornerShape(20.dp))
-            .alpha(if (enabled) 1f else 0.4f)
+            .background(StealthCard.dimmedUnless(enabled))
+            .border(1.dp, (if (highlighted) EurekaGold else StealthBorder).dimmedUnless(enabled), RoundedCornerShape(20.dp))
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 9.dp)
             .testTag(testTag),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(text = label, color = LucidPlatinum, fontSize = 12.sp, maxLines = 1)
+        Text(text = label, color = LucidPlatinum.dimmedUnless(enabled), fontSize = 12.sp, maxLines = 1)
         Text(
             text = value,
-            color = if (highlighted) EurekaGold else Color.White,
+            color = (if (highlighted) EurekaGold else Color.White).dimmedUnless(enabled),
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1
         )
+    }
+}
+
+/**
+ * Disabled controls are dimmed through their colours rather than Modifier.alpha: toggling an alpha
+ * layer inside the ScalingLazyColumn left rows drawn from a stale frame on a Galaxy Watch (cards
+ * vanished, or a highlight border appeared around the row above).
+ */
+private fun Color.dimmedUnless(enabled: Boolean): Color =
+    if (enabled) this else copy(alpha = alpha * 0.4f)
+
+private val SeatLevels = listOf(
+    SeatClimateMode.OFF,
+    SeatClimateMode.LOW,
+    SeatClimateMode.MEDIUM,
+    SeatClimateMode.HIGH
+)
+
+/** A seat's heat level as Off / Low / Med / High chips: one tap goes straight to any level. */
+@Composable
+private fun SeatLevelRow(
+    label: String,
+    current: SeatClimateMode,
+    enabled: Boolean,
+    onSelect: (SeatClimateMode) -> Unit,
+    testTag: String
+) = key(enabled, current.displayName) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(20.dp))
+            .background(StealthCard.dimmedUnless(enabled))
+            .border(
+                1.dp,
+                (if (current.displayName != "Off") EurekaGold else StealthBorder).dimmedUnless(enabled),
+                RoundedCornerShape(20.dp)
+            )
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+            .testTag(testTag),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text(text = label, color = LucidPlatinum.dimmedUnless(enabled), fontSize = 11.sp, maxLines = 1)
+        Spacer(modifier = Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            SeatLevels.forEach { level ->
+                // The car reports an unset level as UNKNOWN, which is shown as Off.
+                val selected = current.displayName == level.displayName
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background((if (selected) EurekaGold else StealthSurface).dimmedUnless(enabled))
+                        .clickable(enabled = enabled && !selected) { onSelect(level) }
+                        .padding(horizontal = 7.dp, vertical = 5.dp)
+                        .semantics { contentDescription = "$label ${level.displayName}" }
+                        .testTag("${testTag}_${level.name.lowercase()}"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = level.displayName,
+                        color = if (selected) ObsidianBlack else LucidPlatinum.dimmedUnless(enabled),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -583,14 +646,17 @@ private fun ToggleRow(
     testTag: String,
     detail: String? = null,
     onColor: Color = AuroraGreen
-) {
+) = key(enabled, isOn) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
-            .background(if (isOn) onColor.copy(alpha = 0.22f) else StealthCard)
-            .border(if (isOn) 1.5.dp else 1.dp, if (isOn) onColor else StealthBorder, RoundedCornerShape(20.dp))
-            .alpha(if (enabled) 1f else 0.4f)
+            .background((if (isOn) onColor.copy(alpha = 0.22f) else StealthCard).dimmedUnless(enabled))
+            .border(
+                if (isOn) 1.5.dp else 1.dp,
+                (if (isOn) onColor else StealthBorder).dimmedUnless(enabled),
+                RoundedCornerShape(20.dp)
+            )
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 9.dp)
             .semantics { contentDescription = "$label ${if (isOn) "on" else "off"}" }
@@ -599,13 +665,13 @@ private fun ToggleRow(
     ) {
         Text(
             text = label,
-            color = if (isOn) Color.White else LucidPlatinum,
+            color = (if (isOn) Color.White else LucidPlatinum).dimmedUnless(enabled),
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
             maxLines = 1
         )
         if (detail != null) {
-            Text(text = detail, color = LucidSilver, fontSize = 9.sp, maxLines = 1)
+            Text(text = detail, color = LucidSilver.dimmedUnless(enabled), fontSize = 9.sp, maxLines = 1)
         }
     }
 }

@@ -52,11 +52,13 @@ interface LucidVehicleRepository {
     suspend fun setChargePortState(vehicle: GravityVehicleSnapshot, doorState: DoorState): GravityVehicleSnapshot
     suspend fun setCabinTemperature(vehicle: GravityVehicleSnapshot, temperatureCelsius: Double?): GravityVehicleSnapshot
     suspend fun setDefrost(vehicle: GravityVehicleSnapshot, defrostState: DefrostState): GravityVehicleSnapshot
+    /** Sets the front seats; [rearHeat] sets all rear seats, or leaves them unchanged when null. */
     suspend fun setSeatClimate(
         vehicle: GravityVehicleSnapshot,
         driverHeat: SeatClimateMode,
         driverVent: SeatClimateMode,
-        passengerHeat: SeatClimateMode
+        passengerHeat: SeatClimateMode,
+        rearHeat: SeatClimateMode? = null
     ): GravityVehicleSnapshot
 
     suspend fun setSteeringWheelHeater(
@@ -436,7 +438,8 @@ class LucidCloudVehicleRepository(
         vehicle: GravityVehicleSnapshot,
         driverHeat: SeatClimateMode,
         driverVent: SeatClimateMode,
-        passengerHeat: SeatClimateMode
+        passengerHeat: SeatClimateMode,
+        rearHeat: SeatClimateMode?
     ): GravityVehicleSnapshot {
         val session = ensureValidSession()
         if (!isDemoSession(session)) {
@@ -448,7 +451,8 @@ class LucidCloudVehicleRepository(
                     vehicleId = vehicle.vehicleId,
                     driverHeat = driverHeat,
                     driverVent = driverVent,
-                    passengerHeat = passengerHeat
+                    passengerHeat = passengerHeat,
+                    rearHeat = rearHeat
                 ),
                 bearerToken = session.idToken
             )
@@ -457,6 +461,7 @@ class LucidCloudVehicleRepository(
             driverSeatHeatMode = driverHeat,
             driverSeatVentMode = driverVent,
             passengerSeatHeatMode = passengerHeat,
+            rearSeatHeatMode = rearHeat ?: vehicle.rearSeatHeatMode,
             powerState = if (vehicle.powerState.isSleeping) PowerState.CLOUD_1 else vehicle.powerState,
             lastUpdatedMs = System.currentTimeMillis()
         )

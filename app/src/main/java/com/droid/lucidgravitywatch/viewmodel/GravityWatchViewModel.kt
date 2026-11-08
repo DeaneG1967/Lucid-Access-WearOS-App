@@ -9,6 +9,7 @@ import com.droid.lucidgravitywatch.model.BatteryPreconStatus
 import com.droid.lucidgravitywatch.model.DefrostState
 import com.droid.lucidgravitywatch.model.DoorState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
+import com.droid.lucidgravitywatch.model.HeatedSeat
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.SeatClimateMode
@@ -921,38 +922,22 @@ class GravityWatchViewModel(
         }
     }
 
-    fun cycleDriverSeatHeat() {
-        val current = controllableVehicle("cycle driver seat heat") ?: return
-        val nextMode = current.driverSeatHeatMode.nextCycle()
+    /** Sets one seat's heat level directly (the rear seats are set together). */
+    fun setSeatHeat(seat: HeatedSeat, mode: SeatClimateMode) {
+        val current = controllableVehicle("set ${seat.label.lowercase()} seat heat") ?: return
+        if (current.seatHeatMode(seat).isSameLevel(mode)) return
         executeConfirmedCommand(
             current,
-            actionLabel = "Driver Seat ${nextMode.displayName}",
-            expectation = "driver seat heat ${nextMode.displayName}",
-            isMet = { it.driverSeatHeatMode.isSameLevel(nextMode) }
+            actionLabel = "${seat.label} Seat ${mode.displayName}",
+            expectation = "${seat.label.lowercase()} seat heat ${mode.displayName}",
+            isMet = { it.seatHeatMode(seat).isSameLevel(mode) }
         ) { vehicle ->
             repository.setSeatClimate(
                 vehicle = vehicle,
-                driverHeat = nextMode,
+                driverHeat = if (seat == HeatedSeat.DRIVER) mode else vehicle.driverSeatHeatMode,
                 driverVent = vehicle.driverSeatVentMode,
-                passengerHeat = vehicle.passengerSeatHeatMode
-            )
-        }
-    }
-
-    fun cyclePassengerSeatHeat() {
-        val current = controllableVehicle("cycle passenger seat heat") ?: return
-        val nextMode = current.passengerSeatHeatMode.nextCycle()
-        executeConfirmedCommand(
-            current,
-            actionLabel = "Passenger Seat ${nextMode.displayName}",
-            expectation = "passenger seat heat ${nextMode.displayName}",
-            isMet = { it.passengerSeatHeatMode.isSameLevel(nextMode) }
-        ) { vehicle ->
-            repository.setSeatClimate(
-                vehicle = vehicle,
-                driverHeat = vehicle.driverSeatHeatMode,
-                driverVent = vehicle.driverSeatVentMode,
-                passengerHeat = nextMode
+                passengerHeat = if (seat == HeatedSeat.PASSENGER) mode else vehicle.passengerSeatHeatMode,
+                rearHeat = if (seat == HeatedSeat.REAR) mode else null
             )
         }
     }

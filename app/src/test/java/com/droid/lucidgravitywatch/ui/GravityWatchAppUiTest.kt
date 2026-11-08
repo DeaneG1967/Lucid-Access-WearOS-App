@@ -24,6 +24,7 @@ import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.DefrostState
 import com.droid.lucidgravitywatch.model.DoorState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
+import com.droid.lucidgravitywatch.model.HeatedSeat
 import com.droid.lucidgravitywatch.model.HvacPower
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
@@ -439,7 +440,7 @@ class GravityWatchAppUiTest {
     fun climatePage_showsTemperatures_togglesClimate_andSetsTargetOnlyOnConfirm() {
         var climateToggled = 0
         val targets = mutableListOf<Double>()
-        var seatCycled = false
+        val seatSettings = mutableListOf<Pair<HeatedSeat, SeatClimateMode>>()
 
         composeTestRule.setContent {
             LucidGravityWatchTheme {
@@ -449,7 +450,7 @@ class GravityWatchAppUiTest {
                     onLogin = { _, _, _ -> },
                     onToggleClimatePrecondition = { climateToggled++ },
                     onSetTargetTemperature = { targets += it },
-                    onCycleDriverSeatHeat = { seatCycled = true }
+                    onSetSeatHeat = { seat, mode -> seatSettings += seat to mode }
                 )
             }
         }
@@ -480,8 +481,12 @@ class GravityWatchAppUiTest {
 
         // Seat controls sit further down the list
         composeTestRule.onNodeWithTag("climate_page").performTouchInput { swipeUp() }
-        composeTestRule.onNodeWithTag("climate_driver_seat").performScrollTo().performClick()
-        assertTrue(seatCycled)
+        // Seat heat: one tap goes straight to a level; the current level (driver Low) is not resent
+        composeTestRule.onNodeWithTag("climate_seat_driver_off").performScrollTo().performClick()
+        composeTestRule.onNodeWithTag("climate_seat_driver_low").performClick()
+        assertEquals(listOf(HeatedSeat.DRIVER to SeatClimateMode.OFF), seatSettings)
+        // sampleGravity has no heated rear seats
+        composeTestRule.onNodeWithTag("climate_seat_rear").assertDoesNotExist()
     }
 
     @Test

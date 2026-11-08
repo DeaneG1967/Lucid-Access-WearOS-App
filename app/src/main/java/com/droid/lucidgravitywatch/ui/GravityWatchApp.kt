@@ -76,6 +76,8 @@ import androidx.compose.ui.unit.sp
 import com.droid.lucidgravitywatch.R
 import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
+import com.droid.lucidgravitywatch.model.HeatedSeat
+import com.droid.lucidgravitywatch.model.SeatClimateMode
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.VehicleModel
@@ -114,8 +116,7 @@ fun GravityWatchApp(viewModel: GravityWatchViewModel) {
         onToggleClimatePrecondition = viewModel::toggleClimatePrecondition,
         onSetTargetTemperature = viewModel::setCabinTargetTemperature,
         onToggleDefrost = viewModel::toggleDefrost,
-        onCycleDriverSeatHeat = viewModel::cycleDriverSeatHeat,
-        onCyclePassengerSeatHeat = viewModel::cyclePassengerSeatHeat,
+        onSetSeatHeat = viewModel::setSeatHeat,
         onCycleSteeringHeater = viewModel::cycleSteeringWheelHeater,
         onToggleBatteryPrecon = viewModel::toggleBatteryPreconditioning,
         onSetChargeLimit = viewModel::setChargeLimit,
@@ -147,8 +148,7 @@ fun GravityWatchScreen(
     onToggleClimatePrecondition: () -> Unit = {},
     onSetTargetTemperature: (Double) -> Unit = {},
     onToggleDefrost: () -> Unit = {},
-    onCycleDriverSeatHeat: () -> Unit = {},
-    onCyclePassengerSeatHeat: () -> Unit = {},
+    onSetSeatHeat: (HeatedSeat, SeatClimateMode) -> Unit = { _, _ -> },
     onCycleSteeringHeater: () -> Unit = {},
     onToggleBatteryPrecon: () -> Unit = {},
     onSetChargeLimit: (Int) -> Unit = {},
@@ -255,8 +255,7 @@ fun GravityWatchScreen(
                                     onToggleClimate = onToggleClimatePrecondition,
                                     onSetTargetTemperature = onSetTargetTemperature,
                                     onToggleDefrost = onToggleDefrost,
-                                    onCycleDriverSeatHeat = onCycleDriverSeatHeat,
-                                    onCyclePassengerSeatHeat = onCyclePassengerSeatHeat,
+                                    onSetSeatHeat = onSetSeatHeat,
                                     onCycleSteeringHeater = onCycleSteeringHeater,
                                     onToggleTemperatureUnit = onToggleTemperatureUnit
                                 )

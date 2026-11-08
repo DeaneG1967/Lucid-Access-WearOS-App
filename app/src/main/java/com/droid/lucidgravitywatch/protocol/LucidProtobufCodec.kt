@@ -329,6 +329,7 @@ object LucidProtobufCodec {
     fun decodeGetVehicleStateResponse(bytes: ByteArray, vehicle: GravityVehicleSnapshot): GravityVehicleSnapshot {
         val state = parseRawFields(bytes).getSubMessage(2) ?: return vehicle
         val decoded = decodeVehicleState(
+            hasHeatedRearSeats = vehicle.hasHeatedRearSeats,
             state = state,
             vehicleId = vehicle.vehicleId,
             vin = vehicle.vin,
@@ -402,6 +403,7 @@ object LucidProtobufCodec {
                 passengerSeatHeatMode = previous.passengerSeatHeatMode,
                 steeringHeaterLevel = previous.steeringHeaterLevel,
                 steeringHeaterStatus = previous.steeringHeaterStatus,
+                rearSeatHeatMode = previous.rearSeatHeatMode,
                 targetTempCelsius = previous.targetTempCelsius
             )
         }
@@ -422,8 +424,10 @@ object LucidProtobufCodec {
             if (model == VehicleModel.GRAVITY) "Lucid Gravity" else "Lucid ${model.displayName}"
         }
         val paintColorName = paintColorNameFromProto(config?.getInt(6) ?: 0)
+        val hasHeatedRearSeats = (config?.getInt(25) ?: 0) == 2 // SECOND_ROW_HEATED_SEATS_AVAILABLE
 
         return decodeVehicleState(
+            hasHeatedRearSeats = hasHeatedRearSeats,
             state = veh.getSubMessage(4),
             vehicleId = vehicleId,
             vin = vin,
@@ -435,6 +439,7 @@ object LucidProtobufCodec {
     }
 
     private fun decodeVehicleState(
+        hasHeatedRearSeats: Boolean,
         state: ProtoFieldMap?,
         vehicleId: String,
         vin: String,
@@ -498,6 +503,8 @@ object LucidProtobufCodec {
         val driverSeatHeatMode = SeatClimateMode.fromProto(seats?.getInt(1) ?: 2)
         val driverSeatVentMode = SeatClimateMode.fromProto(seats?.getInt(5) ?: 2)
         val passengerSeatHeatMode = SeatClimateMode.fromProto(seats?.getInt(7) ?: 2)
+        // Absent (UNKNOWN) on cars without heated rear seats.
+        val rearSeatHeatMode = SeatClimateMode.fromProto(seats?.getInt(13) ?: 0)
         // Absent (0) on the Air, which reports only the on/off status in field 11.
         val steeringHeaterLevel = SteeringWheelHeaterLevel.fromProto(hvac?.getInt(12) ?: 0)
         val steeringHeaterStatus = SteeringHeaterStatus.fromProto(hvac?.getInt(11) ?: 0)
@@ -544,6 +551,8 @@ object LucidProtobufCodec {
             passengerSeatHeatMode = passengerSeatHeatMode,
             steeringHeaterLevel = steeringHeaterLevel,
             steeringHeaterStatus = steeringHeaterStatus,
+            rearSeatHeatMode = rearSeatHeatMode,
+            hasHeatedRearSeats = hasHeatedRearSeats,
             odometerKm = odometerKm,
             softwareVersion = softwareVersion,
             lastUpdatedMs = lastUpdatedMs
@@ -643,7 +652,9 @@ object LucidProtobufCodec {
         vehicleId: String,
         driverHeat: SeatClimateMode,
         driverVent: SeatClimateMode,
-        passengerHeat: SeatClimateMode
+        passengerHeat: SeatClimateMode,
+        /** All three rear seats; null leaves them unchanged. */
+        rearHeat: SeatClimateMode? = null
     ): ByteArray {
         val writer = ProtoWriter()
         writer.writeStringField(1, vehicleId)
@@ -657,6 +668,11 @@ object LucidProtobufCodec {
         writer.writeIntField(9, passengerHeat.protoValue) // front_passenger_heat_backrest_zone3
         writer.writeIntField(10, passengerHeat.protoValue) // front_passenger_heat_cushion_zone2
         writer.writeIntField(11, passengerHeat.protoValue) // front_passenger_heat_cushion_zone4
+        if (rearHeat != null) {
+            writer.writeIntField(14, rearHeat.protoValue) // rear_passenger_heat_left
+            writer.writeIntField(15, rearHeat.protoValue) // rear_passenger_heat_center
+            writer.writeIntField(16, rearHeat.protoValue) // rear_passenger_heat_right
+        }
         return writer.toByteArray()
     }
 
@@ -758,6 +774,8 @@ object LucidProtobufCodec {
         passengerSeatHeatCode: Int = 2,
         steeringHeaterLevelCode: Int = 1,
         steeringHeaterStatusCode: Int = 0,
+        rearSeatHeatCode: Int = 0,
+        rearHeatedSeatsAvailabilityCode: Int = 0,
         odometerKm: Double = 1200.0,
         softwareVersion: String = "2.5.10",
         lastUpdatedMs: Long = 1792113000000L
@@ -809,6 +827,8 @@ object LucidProtobufCodec {
             passengerSeatHeatCode = passengerSeatHeatCode,
             steeringHeaterLevelCode = steeringHeaterLevelCode,
             steeringHeaterStatusCode = steeringHeaterStatusCode,
+            rearSeatHeatCode = rearSeatHeatCode,
+            rearHeatedSeatsAvailabilityCode = rearHeatedSeatsAvailabilityCode,
             odometerKm = odometerKm,
             softwareVersion = softwareVersion,
             lastUpdatedMs = lastUpdatedMs
@@ -899,6 +919,8 @@ object LucidProtobufCodec {
         passengerSeatHeatCode: Int = 2,
         steeringHeaterLevelCode: Int = 1,
         steeringHeaterStatusCode: Int = 0,
+        rearSeatHeatCode: Int = 0,
+        rearHeatedSeatsAvailabilityCode: Int = 0,
         odometerKm: Double = 1200.0,
         softwareVersion: String = "2.5.10",
         lastUpdatedMs: Long = 1792113000000L
@@ -909,6 +931,7 @@ object LucidProtobufCodec {
             writeIntField(3, variantCode)
             writeStringField(5, nickname)
             writeIntField(6, paintColorCode)
+            if (rearHeatedSeatsAvailabilityCode != 0) writeIntField(25, rearHeatedSeatsAvailabilityCode)
         }.toByteArray()
 
         val batteryBytes = ProtoWriter().apply {
@@ -954,6 +977,11 @@ object LucidProtobufCodec {
             writeIntField(1, driverSeatHeatCode)
             writeIntField(5, driverSeatVentCode)
             writeIntField(7, passengerSeatHeatCode)
+            if (rearSeatHeatCode != 0) {
+                writeIntField(13, rearSeatHeatCode)
+                writeIntField(14, rearSeatHeatCode)
+                writeIntField(15, rearSeatHeatCode)
+            }
         }.toByteArray()
 
         val hvacBytes = ProtoWriter().apply {

@@ -5,6 +5,7 @@ import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.DefrostState
 import com.droid.lucidgravitywatch.model.DoorState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
+import com.droid.lucidgravitywatch.model.HeatedSeat
 import com.droid.lucidgravitywatch.model.HvacPower
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
@@ -60,6 +61,7 @@ class GravityWatchViewModelTest {
         var climateCommandCount: Int = 0
         var chargingCommandCount: Int = 0
         val steeringLevelsSent = mutableListOf<SteeringWheelHeaterLevel>()
+        val rearHeatSent = mutableListOf<SeatClimateMode?>()
         var deferCloudStateUpdateOnCommand: Boolean = false
         var fetchGate: CompletableDeferred<Unit>? = null
         var currentSelectedVehicleId: String? = "veh-gravity-01"
@@ -235,12 +237,15 @@ class GravityWatchViewModelTest {
             vehicle: GravityVehicleSnapshot,
             driverHeat: SeatClimateMode,
             driverVent: SeatClimateMode,
-            passengerHeat: SeatClimateMode
+            passengerHeat: SeatClimateMode,
+            rearHeat: SeatClimateMode?
         ): GravityVehicleSnapshot {
+            rearHeatSent += listOf(rearHeat)
             snapshot = snapshot.copy(
                 driverSeatHeatMode = driverHeat,
                 driverSeatVentMode = driverVent,
-                passengerSeatHeatMode = passengerHeat
+                passengerSeatHeatMode = passengerHeat,
+                rearSeatHeatMode = rearHeat ?: snapshot.rearSeatHeatMode
             )
             return snapshot
         }
@@ -418,16 +423,25 @@ class GravityWatchViewModelTest {
         advanceUntilIdle()
         assertEquals(DefrostState.OFF, viewModel.uiState.value.activeVehicle?.defrostState)
 
-        // Cycle Driver Seat Heat -> LOW
-        viewModel.cycleDriverSeatHeat()
+        // Driver seat straight to HIGH, then straight back to OFF
+        viewModel.setSeatHeat(HeatedSeat.DRIVER, SeatClimateMode.HIGH)
         advanceUntilIdle()
-        assertEquals(SeatClimateMode.LOW, viewModel.uiState.value.activeVehicle?.driverSeatHeatMode)
+        assertEquals(SeatClimateMode.HIGH, viewModel.uiState.value.activeVehicle?.driverSeatHeatMode)
+        viewModel.setSeatHeat(HeatedSeat.DRIVER, SeatClimateMode.OFF)
+        advanceUntilIdle()
+        assertEquals(SeatClimateMode.OFF, viewModel.uiState.value.activeVehicle?.driverSeatHeatMode)
 
-        // Cycle Passenger Seat Heat -> LOW, leaving the driver seat as it was
-        viewModel.cyclePassengerSeatHeat()
+        // Passenger seat -> LOW without touching the driver seat or the rear seats
+        viewModel.setSeatHeat(HeatedSeat.PASSENGER, SeatClimateMode.LOW)
         advanceUntilIdle()
         assertEquals(SeatClimateMode.LOW, viewModel.uiState.value.activeVehicle?.passengerSeatHeatMode)
-        assertEquals(SeatClimateMode.LOW, viewModel.uiState.value.activeVehicle?.driverSeatHeatMode)
+        assertEquals(SeatClimateMode.OFF, viewModel.uiState.value.activeVehicle?.driverSeatHeatMode)
+
+        // Rear seats -> MEDIUM, sent as a rear level
+        viewModel.setSeatHeat(HeatedSeat.REAR, SeatClimateMode.MEDIUM)
+        advanceUntilIdle()
+        assertEquals(SeatClimateMode.MEDIUM, viewModel.uiState.value.activeVehicle?.rearSeatHeatMode)
+        assertEquals(listOf(null, null, null, SeatClimateMode.MEDIUM), repo.rearHeatSent)
 
         // Cycle Steering Heater -> LEVEL_1
         viewModel.cycleSteeringWheelHeater()
