@@ -5,8 +5,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -15,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -135,140 +139,126 @@ internal fun ClimatePage(
 
     if (!controlsEnabled && confirmVent) confirmVent = false
 
+    val seats = vehicle.seatClimate
     Box(modifier = Modifier.fillMaxSize()) {
-    // No title, so the whole page fits on one round screen; status messages still show at the top.
-    DrilldownList(title = null, uiState = uiState, testTag = "climate_page", topPadding = 18.dp) {
-        item {
-            // Inside and outside on one line: big inside temperature, smaller outside one.
-            // Tapping it switches between °F and °C.
-            Row(
+        // One screen, centred vertically; it scrolls only if a status message makes it too tall.
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().testTag("climate_page")) {
+            Column(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .clickable(onClick = onToggleTemperatureUnit)
-                    .padding(horizontal = 6.dp)
-                    .semantics { contentDescription = "Temperatures, tap to switch units" }
-                    .testTag("climate_unit_toggle"),
-                verticalAlignment = Alignment.Bottom
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .heightIn(min = maxHeight)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(5.dp, Alignment.CenterVertically)
             ) {
-                Text(
-                    text = vehicle.formatTemperature(vehicle.interiorTempCelsius, useF),
-                    color = Color.White,
-                    fontSize = 30.sp,
-                    lineHeight = 30.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    modifier = Modifier.testTag("climate_inside_temp")
-                )
-                Text(
-                    text = " in",
-                    color = LucidSilver,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    text = vehicle.formatTemperature(vehicle.exteriorTempCelsius, useF),
-                    color = LucidPlatinum,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold,
+                PageStatusLine(uiState)
+
+                // Hero inside temperature, outside below it; tapping either switches °F/°C.
+                Column(
                     modifier = Modifier
-                        .padding(bottom = 2.dp)
-                        .testTag("climate_outside_temp")
-                )
-                Text(
-                    text = " out",
-                    color = LucidSilver,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
-            }
-        }
-        item {
-            // Climate power + target, with the one-tap Max Defrost and Max AC toggles beside it.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                ClimateTargetPill(
-                    target = vehicle.formatTemperature(vehicle.targetTempCelsius, useF, halfDegrees = true),
-                    climateOn = climateOn,
-                    enabled = controlsEnabled,
-                    onTogglePower = onToggleClimate,
-                    onEditTarget = { editingTarget = true },
-                    modifier = Modifier.weight(1f)
-                )
-                RoundModeButton(
-                    iconRes = R.drawable.climate_defrost_24px,
-                    label = null,
-                    contentDesc = "Max Defrost",
-                    isActive = vehicle.defrostState.isEnabled,
-                    accent = AuroraGreen,
-                    enabled = controlsEnabled,
-                    onClick = onToggleDefrost,
-                    testTag = "climate_defrost_toggle",
-                    size = 46.dp
-                )
-                RoundModeButton(
-                    iconRes = R.drawable.climate_max_ac_24px,
-                    label = null,
-                    contentDesc = "Max AC",
-                    isActive = vehicle.maxAcEnabled,
-                    accent = SeatCoolBlue,
-                    enabled = controlsEnabled,
-                    onClick = onToggleMaxAc,
-                    testTag = "climate_max_ac_toggle",
-                    size = 46.dp
-                )
-            }
-        }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-                val seats = vehicle.seatClimate
-                RoundModeButton(
-                    iconRes = R.drawable.seat_heat_24px,
-                    label = null,
-                    contentDesc = "Seat Heat",
-                    isActive = ClimateSeat.entries.any { seats.level(it, SeatClimateKind.HEAT).isOn } ||
-                        vehicle.isSteeringHeaterOn,
-                    accent = SeatClimateKind.HEAT.accent(),
-                    onClick = { onOpenPage(WatchPage.SEAT_HEAT) },
-                    testTag = "climate_seat_heat_button"
-                )
-                if (vehicle.showsSeatCooling) {
-                    RoundModeButton(
-                        iconRes = R.drawable.seat_cool_24px,
-                        label = null,
-                        contentDesc = "Seat Cooling",
-                        isActive = ClimateSeat.entries.any { seats.level(it, SeatClimateKind.COOL).isOn },
-                        accent = SeatClimateKind.COOL.accent(),
-                        onClick = { onOpenPage(WatchPage.SEAT_COOLING) },
-                        testTag = "climate_seat_cooling_button"
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(onClick = onToggleTemperatureUnit)
+                        .padding(horizontal = 10.dp)
+                        .semantics { contentDescription = "Temperatures, tap to switch units" }
+                        .testTag("climate_unit_toggle"),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = vehicle.formatTemperature(vehicle.interiorTempCelsius, useF),
+                        color = Color.White,
+                        fontSize = 30.sp,
+                        lineHeight = 30.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                    Text(
+                        text = "${vehicle.formatTemperature(vehicle.exteriorTempCelsius, useF)} out",
+                        color = LucidSilver,
+                        fontSize = 11.sp,
+                        lineHeight = 12.sp
                     )
                 }
-                // Like the lock: closing is one tap; venting (a security risk) asks first.
-                RoundModeButton(
-                    iconRes = R.drawable.climate_windows_24px,
-                    label = null,
-                    contentDesc = if (vehicle.windowsOpen) "Windows open" else "Windows closed",
-                    isActive = vehicle.windowsOpen,
-                    accent = StatusYellow,
+
+                // Climate: power + target, and the two Max modes in one capsule.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ClimateTargetPill(
+                        target = vehicle.formatTemperature(vehicle.targetTempCelsius, useF, halfDegrees = true),
+                        climateOn = climateOn,
+                        enabled = controlsEnabled,
+                        onTogglePower = onToggleClimate,
+                        onEditTarget = { editingTarget = true },
+                        modifier = Modifier.weight(1f)
+                    )
+                    SplitCapsule(
+                        enabled = controlsEnabled,
+                        halves = listOf(
+                            CapsuleHalf(
+                                iconRes = R.drawable.climate_defrost_24px,
+                                contentDesc = "Max Defrost",
+                                isActive = vehicle.defrostState.isEnabled,
+                                accent = AuroraGreen,
+                                onClick = onToggleDefrost,
+                                testTag = "climate_defrost_toggle"
+                            ),
+                            CapsuleHalf(
+                                iconRes = R.drawable.climate_max_ac_24px,
+                                contentDesc = "Max AC",
+                                isActive = vehicle.maxAcEnabled,
+                                accent = SeatCoolBlue,
+                                onClick = onToggleMaxAc,
+                                testTag = "climate_max_ac_toggle"
+                            )
+                        )
+                    )
+                }
+
+                // Seats: heat and cooling open the seat diagrams, so they stay usable while frozen.
+                SplitCapsule(
+                    enabled = true,
+                    halves = listOfNotNull(
+                        CapsuleHalf(
+                            iconRes = R.drawable.seat_heat_24px,
+                            contentDesc = "Seat Heat",
+                            isActive = ClimateSeat.entries.any { seats.level(it, SeatClimateKind.HEAT).isOn } ||
+                                vehicle.isSteeringHeaterOn,
+                            accent = SeatClimateKind.HEAT.accent(),
+                            onClick = { onOpenPage(WatchPage.SEAT_HEAT) },
+                            testTag = "climate_seat_heat_button"
+                        ),
+                        CapsuleHalf(
+                            iconRes = R.drawable.seat_cool_24px,
+                            contentDesc = "Seat Cooling",
+                            isActive = ClimateSeat.entries.any { seats.level(it, SeatClimateKind.COOL).isOn },
+                            accent = SeatClimateKind.COOL.accent(),
+                            onClick = { onOpenPage(WatchPage.SEAT_COOLING) },
+                            testTag = "climate_seat_cooling_button"
+                        ).takeIf { vehicle.showsSeatCooling }
+                    )
+                )
+
+                // Windows stand apart: not climate, and opening them is a security risk. Like the
+                // lock, closing is one tap and venting asks first.
+                WindowsPill(
+                    open = vehicle.windowsOpen,
                     enabled = controlsEnabled,
-                    onClick = { if (vehicle.windowsOpen) onSetAllWindows(false) else confirmVent = true },
-                    testTag = "climate_windows_button"
+                    onClick = { if (vehicle.windowsOpen) onSetAllWindows(false) else confirmVent = true }
                 )
             }
         }
-    }
-    if (confirmVent) {
-        ConfirmationOverlay(
-            prompt = "Vent Windows?",
-            onCancel = { confirmVent = false },
-            onConfirm = {
-                confirmVent = false
-                onSetAllWindows(true)
-            }
-        )
-    }
+        if (confirmVent) {
+            ConfirmationOverlay(
+                prompt = "Crack Windows?",
+                onCancel = { confirmVent = false },
+                onConfirm = {
+                    confirmVent = false
+                    onSetAllWindows(true)
+                }
+            )
+        }
     }
 }
 
@@ -626,6 +616,102 @@ private fun ValueRow(
 internal fun Color.dimmedUnless(enabled: Boolean): Color =
     if (enabled) this else copy(alpha = alpha * 0.4f)
 
+/** One tappable half of a [SplitCapsule]. */
+private class CapsuleHalf(
+    val iconRes: Int,
+    val contentDesc: String,
+    val isActive: Boolean,
+    val accent: Color,
+    val onClick: () -> Unit,
+    val testTag: String
+)
+
+/**
+ * Related icon buttons joined in one capsule with thin dividers; an active half fills with its
+ * accent. Groups controls that belong together (the Max modes, the seat modes).
+ */
+@Composable
+private fun SplitCapsule(halves: List<CapsuleHalf>, enabled: Boolean) =
+    key(enabled, halves.map { it.isActive }) {
+        val shape = RoundedCornerShape(24.dp)
+        Row(
+            modifier = Modifier
+                .height(44.dp)
+                .clip(shape)
+                .background(StealthCard.dimmedUnless(enabled))
+                .border(1.dp, StealthBorder.dimmedUnless(enabled), shape),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            halves.forEachIndexed { index, half ->
+                if (index > 0) {
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .fillMaxHeight(0.6f)
+                            .background(StealthBorder.dimmedUnless(enabled))
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .width(44.dp)
+                        .fillMaxHeight()
+                        .background(
+                            if (half.isActive) half.accent.copy(alpha = 0.22f).dimmedUnless(enabled) else Color.Transparent
+                        )
+                        .clickable(enabled = enabled, onClick = half.onClick)
+                        .semantics {
+                            contentDescription = "${half.contentDesc} ${if (half.isActive) "on" else "off"}"
+                        }
+                        .testTag(half.testTag),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        painter = painterResource(id = half.iconRes),
+                        contentDescription = null,
+                        tint = (if (half.isActive) half.accent else LucidPlatinum).dimmedUnless(enabled),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+        }
+    }
+
+/**
+ * All-windows control, styled apart from the climate buttons: a flat outlined pill with a label,
+ * amber with "Open" while any window is open.
+ */
+@Composable
+private fun WindowsPill(open: Boolean, enabled: Boolean, onClick: () -> Unit) = key(enabled, open) {
+    val shape = RoundedCornerShape(18.dp)
+    val color = (if (open) StatusYellow else LucidPlatinum).dimmedUnless(enabled)
+    Row(
+        modifier = Modifier
+            .height(32.dp)
+            .clip(shape)
+            .border(1.dp, (if (open) StatusYellow else StealthBorder).dimmedUnless(enabled), shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 14.dp)
+            .semantics { contentDescription = if (open) "Windows open" else "Windows closed" }
+            .testTag("climate_windows_button"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(
+            painter = painterResource(id = R.drawable.climate_windows_24px),
+            contentDescription = null,
+            tint = color,
+            modifier = Modifier.size(18.dp)
+        )
+        Text(
+            text = if (open) "Open" else "Windows",
+            color = color,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
+}
+
 /**
  * Climate power and target temperature in one pill: the round button on the left turns climate
  * on/off; the rest shows the target and opens the temperature editor. Outlined green while on.
@@ -642,7 +728,7 @@ private fun ClimateTargetPill(
     val shape = RoundedCornerShape(26.dp)
     Row(
         modifier = modifier
-            .height(50.dp)
+            .height(46.dp)
             .clip(shape)
             .background((if (climateOn) AuroraGreen.copy(alpha = 0.12f) else StealthCard).dimmedUnless(enabled))
             .border(
@@ -655,7 +741,7 @@ private fun ClimateTargetPill(
     ) {
         Box(
             modifier = Modifier
-                .size(42.dp)
+                .size(38.dp)
                 .clip(CircleShape)
                 .background((if (climateOn) AuroraGreen.copy(alpha = 0.25f) else StealthSurface).dimmedUnless(enabled))
                 .clickable(enabled = enabled, onClick = onTogglePower)
@@ -698,49 +784,6 @@ private fun ClimateTargetPill(
                 fontWeight = FontWeight.Bold,
                 maxLines = 1
             )
-        }
-    }
-}
-
-/** Round icon button, optionally labelled underneath; ringed in [accent] while [isActive]. */
-@Composable
-private fun RoundModeButton(
-    iconRes: Int,
-    label: String?,
-    isActive: Boolean,
-    accent: Color,
-    onClick: () -> Unit,
-    testTag: String,
-    enabled: Boolean = true,
-    contentDesc: String = label.orEmpty(),
-    size: Dp = 44.dp
-) = key(enabled, isActive) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            modifier = Modifier
-                .size(size)
-                .clip(CircleShape)
-                .background(StealthCard.dimmedUnless(enabled))
-                .border(
-                    if (isActive) 2.dp else 1.dp,
-                    (if (isActive) accent else StealthBorder).dimmedUnless(enabled),
-                    CircleShape
-                )
-                .clickable(enabled = enabled, onClick = onClick)
-                .semantics { contentDescription = "$contentDesc ${if (isActive) "on" else "off"}" }
-                .testTag(testTag),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                painter = painterResource(id = iconRes),
-                contentDescription = null,
-                tint = (if (isActive) accent else LucidPlatinum).dimmedUnless(enabled),
-                modifier = Modifier.size(24.dp)
-            )
-        }
-        if (label != null) {
-            Spacer(modifier = Modifier.height(3.dp))
-            Text(label, color = LucidSilver.dimmedUnless(enabled), fontSize = 10.sp)
         }
     }
 }

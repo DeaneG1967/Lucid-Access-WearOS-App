@@ -505,7 +505,7 @@ class GravityWatchAppUiTest {
 
         // Closed: venting asks first; cancel sends nothing
         composeTestRule.onNodeWithTag("climate_windows_button").performClick()
-        composeTestRule.onNodeWithText("Vent Windows?").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Crack Windows?").assertIsDisplayed()
         composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
         assertTrue(choices.isEmpty())
         composeTestRule.onNodeWithTag("climate_windows_button").performClick()

@@ -956,10 +956,10 @@ class GravityWatchViewModel(
 
     /** Vents all windows, or closes them all ([vent] false). */
     fun setAllWindows(vent: Boolean) {
-        val current = controllableVehicle(if (vent) "vent windows" else "close windows") ?: return
+        val current = controllableVehicle(if (vent) "crack windows" else "close windows") ?: return
         executeConfirmedCommand(
             current,
-            actionLabel = if (vent) "Venting Windows" else "Closing Windows",
+            actionLabel = if (vent) "Cracking Windows" else "Closing Windows",
             expectation = "windows ${if (vent) "open" else "closed"}",
             isMet = { it.windowsOpen == vent }
         ) { vehicle ->
