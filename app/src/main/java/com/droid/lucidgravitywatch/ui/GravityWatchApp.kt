@@ -36,11 +36,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryFull
-import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.EvStation
 import androidx.compose.material.icons.filled.SwapHoriz
-import androidx.compose.material.icons.filled.Thermostat
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -76,8 +73,8 @@ import androidx.compose.ui.unit.sp
 import com.droid.lucidgravitywatch.R
 import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
-import com.droid.lucidgravitywatch.model.HeatedSeat
-import com.droid.lucidgravitywatch.model.SeatClimateMode
+import com.droid.lucidgravitywatch.model.ClimateSeat
+import com.droid.lucidgravitywatch.model.SeatClimateKind
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.VehicleModel
@@ -116,8 +113,8 @@ fun GravityWatchApp(viewModel: GravityWatchViewModel) {
         onToggleClimatePrecondition = viewModel::toggleClimatePrecondition,
         onSetTargetTemperature = viewModel::setCabinTargetTemperature,
         onToggleDefrost = viewModel::toggleDefrost,
-        onSetSeatHeat = viewModel::setSeatHeat,
-        onCycleSteeringHeater = viewModel::cycleSteeringWheelHeater,
+        onTapSeat = viewModel::tapSeat,
+        onTapSteeringWheel = viewModel::tapSteeringWheel,
         onToggleBatteryPrecon = viewModel::toggleBatteryPreconditioning,
         onSetChargeLimit = viewModel::setChargeLimit,
         onToggleCharging = viewModel::toggleCharging,
@@ -148,8 +145,8 @@ fun GravityWatchScreen(
     onToggleClimatePrecondition: () -> Unit = {},
     onSetTargetTemperature: (Double) -> Unit = {},
     onToggleDefrost: () -> Unit = {},
-    onSetSeatHeat: (HeatedSeat, SeatClimateMode) -> Unit = { _, _ -> },
-    onCycleSteeringHeater: () -> Unit = {},
+    onTapSeat: (ClimateSeat, SeatClimateKind) -> Unit = { _, _ -> },
+    onTapSteeringWheel: () -> Unit = {},
     onToggleBatteryPrecon: () -> Unit = {},
     onSetChargeLimit: (Int) -> Unit = {},
     onToggleCharging: () -> Unit = {},
@@ -240,24 +237,33 @@ fun GravityWatchScreen(
                     // Drill-down pages need a vehicle; without one the dashboard shows its
                     // "Contacting Cloud..." state instead.
                     val page = if (activeVehicle == null) WatchPage.HOME else uiState.currentPage
+                    val climatePage: @Composable () -> Unit = {
+                        ClimatePage(
+                            uiState = uiState,
+                            vehicle = activeVehicle!!,
+                            onToggleClimate = onToggleClimatePrecondition,
+                            onSetTargetTemperature = onSetTargetTemperature,
+                            onToggleDefrost = onToggleDefrost,
+                            onOpenPage = onOpenPage,
+                            onToggleTemperatureUnit = onToggleTemperatureUnit
+                        )
+                    }
                     if (page == WatchPage.HOME) {
                         dashboard()
                     } else {
                         SwipeBackBox(
                             pageKey = page,
-                            onBack = { onOpenPage(WatchPage.HOME) },
-                            background = dashboard
+                            onBack = { onOpenPage(page.parent) },
+                            background = if (page.parent == WatchPage.CLIMATE) climatePage else dashboard
                         ) {
                             when (page) {
-                                WatchPage.CLIMATE -> ClimatePage(
+                                WatchPage.CLIMATE -> climatePage()
+                                WatchPage.SEAT_HEAT, WatchPage.SEAT_COOLING -> SeatClimatePage(
                                     uiState = uiState,
                                     vehicle = activeVehicle!!,
-                                    onToggleClimate = onToggleClimatePrecondition,
-                                    onSetTargetTemperature = onSetTargetTemperature,
-                                    onToggleDefrost = onToggleDefrost,
-                                    onSetSeatHeat = onSetSeatHeat,
-                                    onCycleSteeringHeater = onCycleSteeringHeater,
-                                    onToggleTemperatureUnit = onToggleTemperatureUnit
+                                    kind = if (page == WatchPage.SEAT_HEAT) SeatClimateKind.HEAT else SeatClimateKind.COOL,
+                                    onTapSeat = onTapSeat,
+                                    onTapSteeringWheel = onTapSteeringWheel
                                 )
                                 WatchPage.CHARGING -> ChargingPage(
                                     uiState = uiState,
@@ -863,7 +869,7 @@ private fun SimplifiedWatchDashboard(
             verticalAlignment = Alignment.Bottom
         ) {
             DrilldownNavButton(
-                icon = Icons.Default.Thermostat,
+                icon = R.drawable.nav_thermostat_24px,
                 contentDesc = "Climate",
                 isActive = vehicle.hvacPower.isActive,
                 activeColor = AuroraGreen,
@@ -872,7 +878,7 @@ private fun SimplifiedWatchDashboard(
                 modifier = Modifier.padding(bottom = 10.dp)
             )
             DrilldownNavButton(
-                icon = Icons.Default.EvStation,
+                icon = R.drawable.nav_ev_station_24px,
                 contentDesc = "Charging",
                 isActive = isCharging,
                 activeColor = AuroraGreen,
@@ -880,7 +886,7 @@ private fun SimplifiedWatchDashboard(
                 testTag = "nav_charging_button"
             )
             DrilldownNavButton(
-                icon = Icons.Default.Campaign,
+                icon = R.drawable.nav_campaign_24px,
                 contentDesc = "Flash and Honk",
                 isActive = false,
                 activeColor = EurekaGold,
@@ -932,7 +938,7 @@ private fun SimplifiedWatchDashboard(
 /** Small round button on the home screen that opens a drill-down page. */
 @Composable
 private fun DrilldownNavButton(
-    icon: ImageVector,
+    @DrawableRes icon: Int,
     contentDesc: String,
     isActive: Boolean,
     activeColor: Color,
@@ -942,7 +948,7 @@ private fun DrilldownNavButton(
 ) {
     Box(
         modifier = modifier
-            .size(40.dp)
+            .size(46.dp)
             .clip(CircleShape)
             .background(Color(0xFF1B1B1B))
             .border(if (isActive) 2.dp else 1.dp, if (isActive) activeColor else StealthBorder, CircleShape)
@@ -951,11 +957,13 @@ private fun DrilldownNavButton(
             .testTag(testTag),
         contentAlignment = Alignment.Center
     ) {
+        // Outlined Material Symbols, the same style as the lock icon, so the row reads lighter
+        // than the old filled icons.
         Icon(
-            imageVector = icon,
+            painter = painterResource(id = icon),
             contentDescription = null,
             tint = Color(0xFFDEC79B),
-            modifier = Modifier.size(22.dp)
+            modifier = Modifier.size(26.dp)
         )
     }
 }

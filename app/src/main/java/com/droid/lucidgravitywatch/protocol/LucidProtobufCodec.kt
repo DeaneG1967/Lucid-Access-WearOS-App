@@ -330,6 +330,7 @@ object LucidProtobufCodec {
         val state = parseRawFields(bytes).getSubMessage(2) ?: return vehicle
         val decoded = decodeVehicleState(
             hasHeatedRearSeats = vehicle.hasHeatedRearSeats,
+            hasVentilatedFrontSeats = vehicle.hasVentilatedFrontSeats,
             state = state,
             vehicleId = vehicle.vehicleId,
             vin = vehicle.vin,
@@ -401,6 +402,7 @@ object LucidProtobufCodec {
                 driverSeatHeatMode = previous.driverSeatHeatMode,
                 driverSeatVentMode = previous.driverSeatVentMode,
                 passengerSeatHeatMode = previous.passengerSeatHeatMode,
+                passengerSeatVentMode = previous.passengerSeatVentMode,
                 steeringHeaterLevel = previous.steeringHeaterLevel,
                 steeringHeaterStatus = previous.steeringHeaterStatus,
                 rearSeatHeatMode = previous.rearSeatHeatMode,
@@ -425,9 +427,11 @@ object LucidProtobufCodec {
         }
         val paintColorName = paintColorNameFromProto(config?.getInt(6) ?: 0)
         val hasHeatedRearSeats = (config?.getInt(25) ?: 0) == 2 // SECOND_ROW_HEATED_SEATS_AVAILABLE
+        val hasVentilatedFrontSeats = (config?.getInt(24) ?: 0) == 2 // FRONT_SEATS_VENTILATION_AVAILABLE
 
         return decodeVehicleState(
             hasHeatedRearSeats = hasHeatedRearSeats,
+            hasVentilatedFrontSeats = hasVentilatedFrontSeats,
             state = veh.getSubMessage(4),
             vehicleId = vehicleId,
             vin = vin,
@@ -440,6 +444,7 @@ object LucidProtobufCodec {
 
     private fun decodeVehicleState(
         hasHeatedRearSeats: Boolean,
+        hasVentilatedFrontSeats: Boolean,
         state: ProtoFieldMap?,
         vehicleId: String,
         vin: String,
@@ -503,6 +508,7 @@ object LucidProtobufCodec {
         val driverSeatHeatMode = SeatClimateMode.fromProto(seats?.getInt(1) ?: 2)
         val driverSeatVentMode = SeatClimateMode.fromProto(seats?.getInt(5) ?: 2)
         val passengerSeatHeatMode = SeatClimateMode.fromProto(seats?.getInt(7) ?: 2)
+        val passengerSeatVentMode = SeatClimateMode.fromProto(seats?.getInt(11) ?: 2)
         // Absent (UNKNOWN) on cars without heated rear seats.
         val rearSeatHeatMode = SeatClimateMode.fromProto(seats?.getInt(13) ?: 0)
         // Absent (0) on the Air, which reports only the on/off status in field 11.
@@ -553,6 +559,8 @@ object LucidProtobufCodec {
             steeringHeaterStatus = steeringHeaterStatus,
             rearSeatHeatMode = rearSeatHeatMode,
             hasHeatedRearSeats = hasHeatedRearSeats,
+            passengerSeatVentMode = passengerSeatVentMode,
+            hasVentilatedFrontSeats = hasVentilatedFrontSeats,
             odometerKm = odometerKm,
             softwareVersion = softwareVersion,
             lastUpdatedMs = lastUpdatedMs
@@ -654,7 +662,9 @@ object LucidProtobufCodec {
         driverVent: SeatClimateMode,
         passengerHeat: SeatClimateMode,
         /** All three rear seats; null leaves them unchanged. */
-        rearHeat: SeatClimateMode? = null
+        rearHeat: SeatClimateMode? = null,
+        /** Null leaves the passenger seat's ventilation unchanged. */
+        passengerVent: SeatClimateMode? = null
     ): ByteArray {
         val writer = ProtoWriter()
         writer.writeStringField(1, vehicleId)
@@ -668,6 +678,10 @@ object LucidProtobufCodec {
         writer.writeIntField(9, passengerHeat.protoValue) // front_passenger_heat_backrest_zone3
         writer.writeIntField(10, passengerHeat.protoValue) // front_passenger_heat_cushion_zone2
         writer.writeIntField(11, passengerHeat.protoValue) // front_passenger_heat_cushion_zone4
+        if (passengerVent != null) {
+            writer.writeIntField(12, passengerVent.protoValue) // front_passenger_vent_backrest
+            writer.writeIntField(13, passengerVent.protoValue) // front_passenger_vent_cushion
+        }
         if (rearHeat != null) {
             writer.writeIntField(14, rearHeat.protoValue) // rear_passenger_heat_left
             writer.writeIntField(15, rearHeat.protoValue) // rear_passenger_heat_center
@@ -776,6 +790,8 @@ object LucidProtobufCodec {
         steeringHeaterStatusCode: Int = 0,
         rearSeatHeatCode: Int = 0,
         rearHeatedSeatsAvailabilityCode: Int = 0,
+        passengerSeatVentCode: Int = 2,
+        frontVentilationAvailabilityCode: Int = 0,
         odometerKm: Double = 1200.0,
         softwareVersion: String = "2.5.10",
         lastUpdatedMs: Long = 1792113000000L
@@ -829,6 +845,8 @@ object LucidProtobufCodec {
             steeringHeaterStatusCode = steeringHeaterStatusCode,
             rearSeatHeatCode = rearSeatHeatCode,
             rearHeatedSeatsAvailabilityCode = rearHeatedSeatsAvailabilityCode,
+            passengerSeatVentCode = passengerSeatVentCode,
+            frontVentilationAvailabilityCode = frontVentilationAvailabilityCode,
             odometerKm = odometerKm,
             softwareVersion = softwareVersion,
             lastUpdatedMs = lastUpdatedMs
@@ -921,6 +939,8 @@ object LucidProtobufCodec {
         steeringHeaterStatusCode: Int = 0,
         rearSeatHeatCode: Int = 0,
         rearHeatedSeatsAvailabilityCode: Int = 0,
+        passengerSeatVentCode: Int = 2,
+        frontVentilationAvailabilityCode: Int = 0,
         odometerKm: Double = 1200.0,
         softwareVersion: String = "2.5.10",
         lastUpdatedMs: Long = 1792113000000L
@@ -931,6 +951,7 @@ object LucidProtobufCodec {
             writeIntField(3, variantCode)
             writeStringField(5, nickname)
             writeIntField(6, paintColorCode)
+            if (frontVentilationAvailabilityCode != 0) writeIntField(24, frontVentilationAvailabilityCode)
             if (rearHeatedSeatsAvailabilityCode != 0) writeIntField(25, rearHeatedSeatsAvailabilityCode)
         }.toByteArray()
 
@@ -977,6 +998,7 @@ object LucidProtobufCodec {
             writeIntField(1, driverSeatHeatCode)
             writeIntField(5, driverSeatVentCode)
             writeIntField(7, passengerSeatHeatCode)
+            writeIntField(11, passengerSeatVentCode)
             if (rearSeatHeatCode != 0) {
                 writeIntField(13, rearSeatHeatCode)
                 writeIntField(14, rearSeatHeatCode)

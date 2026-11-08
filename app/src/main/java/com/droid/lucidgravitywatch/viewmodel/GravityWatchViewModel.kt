@@ -9,10 +9,12 @@ import com.droid.lucidgravitywatch.model.BatteryPreconStatus
 import com.droid.lucidgravitywatch.model.DefrostState
 import com.droid.lucidgravitywatch.model.DoorState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
-import com.droid.lucidgravitywatch.model.HeatedSeat
+import com.droid.lucidgravitywatch.model.ClimateSeat
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
+import com.droid.lucidgravitywatch.model.SeatClimateKind
 import com.droid.lucidgravitywatch.model.SeatClimateMode
+import com.droid.lucidgravitywatch.model.SeatClimateSettings
 import com.droid.lucidgravitywatch.model.SteeringWheelHeaterLevel
 import com.droid.lucidgravitywatch.network.LucidApiException
 import com.droid.lucidgravitywatch.repository.LucidVehicleRepository
@@ -39,7 +41,16 @@ enum class WatchPage(val title: String) {
     HOME("Home"),
     CLIMATE("Climate"),
     CHARGING("Charging"),
-    FLONK("Flonk")
+    FLONK("Flonk"),
+    SEAT_HEAT("Seat Heat"),
+    SEAT_COOLING("Seat Cooling");
+
+    /** Where back/swipe-back goes from this page. */
+    val parent: WatchPage
+        get() = when (this) {
+            SEAT_HEAT, SEAT_COOLING -> CLIMATE
+            else -> HOME
+        }
 }
 
 data class GravityWatchUiState(
@@ -73,7 +84,14 @@ data class GravityWatchUiState(
      * True while the active car keeps sending new reports (see GravityWatchViewModel's report
      * tracking). A charging car stays online in SLEEP_CHARGE without ever reporting an awake state.
      */
-    val hasLiveReports: Boolean = false
+    val hasLiveReports: Boolean = false,
+    /**
+     * Seat levels tapped in on the seat diagram: held for [GravityWatchViewModel.SEAT_TAP_SETTLE_MS]
+     * after the last tap, then sent, and shown until the car confirms them. Null when none.
+     */
+    val seatDraft: SeatClimateSettings? = null,
+    /** Steering heater level tapped in on the seat diagram; handled like [seatDraft]. */
+    val steeringDraft: SteeringWheelHeaterLevel? = null
 ) {
     /**
      * The vehicle being controlled: the user's saved choice, or the only vehicle on the account.
@@ -117,13 +135,6 @@ private class ExpectedCondition(
     val isMet: (GravityVehicleSnapshot) -> Boolean
 )
 
-/** The car may report an unset level as UNKNOWN, which the app shows as Off. */
-private fun SeatClimateMode.isSameLevel(other: SeatClimateMode): Boolean =
-    displayName == other.displayName
-
-private fun SteeringWheelHeaterLevel.isSameLevel(other: SteeringWheelHeaterLevel): Boolean =
-    displayName == other.displayName
-
 class GravityWatchViewModel(
     private val repository: LucidVehicleRepository,
     /** Monotonic watch time; only ever compared with itself, never with Lucid's report times. */
@@ -157,6 +168,8 @@ class GravityWatchViewModel(
         const val MAX_CABIN_TEMP_C = 29.5
         const val MIN_CHARGE_LIMIT_PERCENT = 50
         const val MAX_CHARGE_LIMIT_PERCENT = 100
+        /** Seat diagram taps are sent once there has been no tap for this long. */
+        const val SEAT_TAP_SETTLE_MS = 1_500L
         private const val GRPC_RESOURCE_EXHAUSTED = 8
         private const val TAG = "LucidVM"
     }
@@ -176,6 +189,10 @@ class GravityWatchViewModel(
     private var expectedCondition: ExpectedCondition? = null
     private var awaitingPostCommandPoll: Boolean = false
     private var vehicleListJob: Job? = null
+    /** Sends the seat draft once taps settle. */
+    private var seatSendJob: Job? = null
+    /** True once the seat draft has been sent; it is then kept until the command settles. */
+    private var seatDraftSent: Boolean = false
 
     // Report tracking for the active car: report times are Lucid's server clock, so they are only
     // compared with each other; staleness is measured with the watch's monotonic clock.
@@ -517,6 +534,7 @@ class GravityWatchViewModel(
         if (state.isCommandPending || awaitingPostCommandPoll || hasPendingExpectedChanges()) return
         Log.i(TAG, "\"${state.awaitingVehicleStateLabel}\" settled; controls released")
         _uiState.update { it.copy(awaitingVehicleStateLabel = null) }
+        if (seatDraftSent) discardSeatDraft()
     }
 
     private fun wakeIfAsleep(vehicle: GravityVehicleSnapshot) {
@@ -675,6 +693,7 @@ class GravityWatchViewModel(
             wakeJob?.cancel()
             wakeJob = null
             clearExpectedChanges()
+            discardSeatDraft()
             awaitingPostCommandPoll = false
             resetReportTracking()
             _uiState.update {
@@ -922,56 +941,112 @@ class GravityWatchViewModel(
         }
     }
 
-    /** Sets one seat's heat level directly (the rear seats are set together). */
-    fun setSeatHeat(seat: HeatedSeat, mode: SeatClimateMode) {
-        val current = controllableVehicle("set ${seat.label.lowercase()} seat heat") ?: return
-        if (current.seatHeatMode(seat).isSameLevel(mode)) return
-        executeConfirmedCommand(
-            current,
-            actionLabel = "${seat.label} Seat ${mode.displayName}",
-            expectation = "${seat.label.lowercase()} seat heat ${mode.displayName}",
-            isMet = { it.seatHeatMode(seat).isSameLevel(mode) }
-        ) { vehicle ->
-            repository.setSeatClimate(
-                vehicle = vehicle,
-                driverHeat = if (seat == HeatedSeat.DRIVER) mode else vehicle.driverSeatHeatMode,
-                driverVent = vehicle.driverSeatVentMode,
-                passengerHeat = if (seat == HeatedSeat.PASSENGER) mode else vehicle.passengerSeatHeatMode,
-                rearHeat = if (seat == HeatedSeat.REAR) mode else null
-            )
-        }
+    /**
+     * A tap on a seat in the seat diagram: steps its [kind] level Off -> High -> Med -> Low -> Off.
+     * Nothing is sent until taps stop for [SEAT_TAP_SETTLE_MS], so several seats and levels can be
+     * set with one command.
+     */
+    fun tapSeat(seat: ClimateSeat, kind: SeatClimateKind) {
+        val vehicle = seatDiagramVehicle("tap ${seat.label.lowercase()} seat") ?: return
+        val draft = _uiState.value.seatDraft ?: vehicle.seatClimate
+        val next = draft.level(seat, kind).nextTap()
+        _uiState.update { it.copy(seatDraft = draft.with(seat, kind, next)) }
+        scheduleSeatDraftSend()
     }
 
     /**
-     * Steps the steering wheel heater to its next level, or toggles it on/off on cars that report
-     * no level (the Air), where "on" is sent as LEVEL_2: Lucid Cloud rejects LEVEL_1 and LEVEL_3
-     * for an Air, and LEVEL_2 is what the BearTalk Lucid client sends.
+     * A tap on the steering wheel in the seat diagram: on/off on cars that report no level (the
+     * Air, where "on" is sent as LEVEL_2: Lucid Cloud rejects LEVEL_1 and LEVEL_3 for an Air, and
+     * LEVEL_2 is what the BearTalk Lucid client sends), otherwise L3 -> L2 -> L1 -> Off.
      */
-    fun cycleSteeringWheelHeater() {
-        val current = controllableVehicle("cycle steering heater") ?: return
-        if (current.hasOnOffSteeringHeater) {
-            val turnOn = !current.isSteeringHeaterOn
-            executeConfirmedCommand(
-                current,
-                actionLabel = if (turnOn) "Steering Heat On" else "Steering Heat Off",
-                expectation = "steering heat ${if (turnOn) "on" else "off"}",
-                isMet = { it.isSteeringHeaterOn == turnOn }
-            ) { vehicle ->
-                repository.setSteeringWheelHeater(
-                    vehicle,
-                    if (turnOn) SteeringWheelHeaterLevel.LEVEL_2 else SteeringWheelHeaterLevel.OFF
-                )
-            }
+    fun tapSteeringWheel() {
+        val vehicle = seatDiagramVehicle("tap steering wheel") ?: return
+        val current = _uiState.value.steeringDraft ?: vehicle.steeringHeaterSetting
+        val next = if (vehicle.hasOnOffSteeringHeater) {
+            if (current.bars > 0) SteeringWheelHeaterLevel.OFF else SteeringWheelHeaterLevel.LEVEL_2
+        } else {
+            current.nextTap()
+        }
+        _uiState.update { it.copy(steeringDraft = next) }
+        scheduleSeatDraftSend()
+    }
+
+    private fun seatDiagramVehicle(action: String): GravityVehicleSnapshot? {
+        if (seatDraftSent) {
+            Log.i(TAG, "Ignoring \"$action\": seat changes already sent")
+            return null
+        }
+        return controllableVehicle(action)
+    }
+
+    private fun scheduleSeatDraftSend() {
+        seatSendJob?.cancel()
+        seatSendJob = viewModelScope.launch {
+            delay(SEAT_TAP_SETTLE_MS)
+            seatSendJob = null
+            sendSeatDraft()
+        }
+    }
+
+    private fun discardSeatDraft() {
+        seatSendJob?.cancel()
+        seatSendJob = null
+        seatDraftSent = false
+        _uiState.update { it.copy(seatDraft = null, steeringDraft = null) }
+    }
+
+    /** Sends whatever the seat diagram taps changed, as one confirmed command. */
+    private fun sendSeatDraft() {
+        val state = _uiState.value
+        val vehicle = controllableVehicle("send seat changes")
+        if (vehicle == null) {
+            discardSeatDraft()
             return
         }
-        val nextLevel = current.steeringHeaterLevel.nextCycle()
+        val seats = state.seatDraft?.takeUnless { it.sameLevelsAs(vehicle.seatClimate) }
+        val wheel = state.steeringDraft?.takeUnless { it.bars == vehicle.steeringHeaterSetting.bars }
+        if (seats == null && wheel == null) {
+            discardSeatDraft()
+            return
+        }
+        seatDraftSent = true
+        val label = when {
+            seats != null && wheel != null -> "Setting Seats & Wheel"
+            seats != null -> "Setting Seats"
+            wheel!!.bars > 0 -> "Steering Heat On"
+            else -> "Steering Heat Off"
+        }
         executeConfirmedCommand(
-            current,
-            actionLabel = "Steering Heat ${nextLevel.displayName}",
-            expectation = "steering heat ${nextLevel.displayName}",
-            isMet = { it.steeringHeaterLevel.isSameLevel(nextLevel) }
-        ) { vehicle ->
-            repository.setSteeringWheelHeater(vehicle, nextLevel)
+            vehicle,
+            actionLabel = label,
+            expectation = listOfNotNull(
+                seats?.describe(),
+                wheel?.let { "steering heat ${it.displayName}" }
+            ).joinToString("; "),
+            isMet = { polled ->
+                (seats == null || polled.seatClimate.sameLevelsAs(seats)) &&
+                    (wheel == null || polled.steeringHeaterSetting.bars == wheel.bars)
+            }
+        ) { target ->
+            if (seats != null) {
+                repository.setSeatClimate(
+                    vehicle = target,
+                    driverHeat = seats.driverHeat,
+                    driverVent = seats.driverVent,
+                    passengerHeat = seats.passengerHeat,
+                    // Rear heat and passenger cooling are only sent when they change, and only to
+                    // cars that have them.
+                    rearHeat = seats.rearHeat.takeIf {
+                        target.showsRearSeatHeat && it.bars != target.rearSeatHeatMode.bars
+                    },
+                    passengerVent = seats.passengerVent.takeIf {
+                        target.showsSeatCooling && it.bars != target.passengerSeatVentMode.bars
+                    }
+                )
+            }
+            if (wheel != null) {
+                repository.setSteeringWheelHeater(target, wheel)
+            }
         }
     }
 
@@ -1057,6 +1132,7 @@ class GravityWatchViewModel(
         fastPollWindowJob?.cancel()
         rateLimitBackoffJob?.cancel()
         clearExpectedChanges()
+        discardSeatDraft()
         awaitingPostCommandPoll = false
         resetReportTracking()
         repository.logout()

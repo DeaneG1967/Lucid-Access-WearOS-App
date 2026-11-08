@@ -5,12 +5,13 @@ import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.DefrostState
 import com.droid.lucidgravitywatch.model.DoorState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
-import com.droid.lucidgravitywatch.model.HeatedSeat
+import com.droid.lucidgravitywatch.model.ClimateSeat
 import com.droid.lucidgravitywatch.model.HvacPower
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.LucidSession
 import com.droid.lucidgravitywatch.model.PowerState
+import com.droid.lucidgravitywatch.model.SeatClimateKind
 import com.droid.lucidgravitywatch.model.SeatClimateMode
 import com.droid.lucidgravitywatch.model.SteeringHeaterStatus
 import com.droid.lucidgravitywatch.model.SteeringWheelHeaterLevel
@@ -62,6 +63,7 @@ class GravityWatchViewModelTest {
         var chargingCommandCount: Int = 0
         val steeringLevelsSent = mutableListOf<SteeringWheelHeaterLevel>()
         val rearHeatSent = mutableListOf<SeatClimateMode?>()
+        val passengerVentSent = mutableListOf<SeatClimateMode?>()
         var deferCloudStateUpdateOnCommand: Boolean = false
         var fetchGate: CompletableDeferred<Unit>? = null
         var currentSelectedVehicleId: String? = "veh-gravity-01"
@@ -238,14 +240,17 @@ class GravityWatchViewModelTest {
             driverHeat: SeatClimateMode,
             driverVent: SeatClimateMode,
             passengerHeat: SeatClimateMode,
-            rearHeat: SeatClimateMode?
+            rearHeat: SeatClimateMode?,
+            passengerVent: SeatClimateMode?
         ): GravityVehicleSnapshot {
             rearHeatSent += listOf(rearHeat)
+            passengerVentSent += listOf(passengerVent)
             snapshot = snapshot.copy(
                 driverSeatHeatMode = driverHeat,
                 driverSeatVentMode = driverVent,
                 passengerSeatHeatMode = passengerHeat,
-                rearSeatHeatMode = rearHeat ?: snapshot.rearSeatHeatMode
+                rearSeatHeatMode = rearHeat ?: snapshot.rearSeatHeatMode,
+                passengerSeatVentMode = passengerVent ?: snapshot.passengerSeatVentMode
             )
             return snapshot
         }
@@ -423,31 +428,11 @@ class GravityWatchViewModelTest {
         advanceUntilIdle()
         assertEquals(DefrostState.OFF, viewModel.uiState.value.activeVehicle?.defrostState)
 
-        // Driver seat straight to HIGH, then straight back to OFF
-        viewModel.setSeatHeat(HeatedSeat.DRIVER, SeatClimateMode.HIGH)
-        advanceUntilIdle()
-        assertEquals(SeatClimateMode.HIGH, viewModel.uiState.value.activeVehicle?.driverSeatHeatMode)
-        viewModel.setSeatHeat(HeatedSeat.DRIVER, SeatClimateMode.OFF)
-        advanceUntilIdle()
-        assertEquals(SeatClimateMode.OFF, viewModel.uiState.value.activeVehicle?.driverSeatHeatMode)
-
-        // Passenger seat -> LOW without touching the driver seat or the rear seats
-        viewModel.setSeatHeat(HeatedSeat.PASSENGER, SeatClimateMode.LOW)
-        advanceUntilIdle()
-        assertEquals(SeatClimateMode.LOW, viewModel.uiState.value.activeVehicle?.passengerSeatHeatMode)
-        assertEquals(SeatClimateMode.OFF, viewModel.uiState.value.activeVehicle?.driverSeatHeatMode)
-
-        // Rear seats -> MEDIUM, sent as a rear level
-        viewModel.setSeatHeat(HeatedSeat.REAR, SeatClimateMode.MEDIUM)
-        advanceUntilIdle()
-        assertEquals(SeatClimateMode.MEDIUM, viewModel.uiState.value.activeVehicle?.rearSeatHeatMode)
-        assertEquals(listOf(null, null, null, SeatClimateMode.MEDIUM), repo.rearHeatSent)
-
-        // Cycle Steering Heater -> LEVEL_1
-        viewModel.cycleSteeringWheelHeater()
+        // Steering wheel tap on a car with heater levels -> LEVEL_3 (taps go High first)
+        viewModel.tapSteeringWheel()
         advanceUntilIdle()
         assertEquals(
-            SteeringWheelHeaterLevel.LEVEL_1,
+            SteeringWheelHeaterLevel.LEVEL_3,
             viewModel.uiState.value.activeVehicle?.steeringHeaterLevel
         )
 
@@ -961,18 +946,100 @@ class GravityWatchViewModelTest {
         viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
         advanceUntilIdle()
 
-        viewModel.cycleSteeringWheelHeater()
+        viewModel.tapSteeringWheel()
         advanceUntilIdle()
         assertTrue(viewModel.uiState.value.activeVehicle!!.isSteeringHeaterOn)
         assertFalse(viewModel.uiState.value.areControlsLocked)
 
-        viewModel.cycleSteeringWheelHeater()
+        viewModel.tapSteeringWheel()
         advanceUntilIdle()
         assertFalse(viewModel.uiState.value.activeVehicle!!.isSteeringHeaterOn)
         assertEquals(
             listOf(SteeringWheelHeaterLevel.LEVEL_2, SteeringWheelHeaterLevel.OFF),
             repo.steeringLevelsSent
         )
+    }
+
+    private fun seatTestRepo() = FakeLucidVehicleRepository().apply {
+        snapshot = snapshot.copy(
+            powerState = PowerState.CLOUD_1,
+            driverSeatHeatMode = SeatClimateMode.OFF,
+            driverSeatVentMode = SeatClimateMode.OFF,
+            passengerSeatHeatMode = SeatClimateMode.OFF,
+            passengerSeatVentMode = SeatClimateMode.OFF,
+            rearSeatHeatMode = SeatClimateMode.OFF,
+            hasHeatedRearSeats = true,
+            hasVentilatedFrontSeats = true
+        )
+    }
+
+    @Test
+    fun seatTaps_areQueuedAndSentAsOneCommandOnceTapsStop() = runTest {
+        val repo = seatTestRepo()
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+
+        // Driver: Off -> High -> Med. Rear: Off -> High. Shown at once, nothing sent yet.
+        viewModel.tapSeat(ClimateSeat.DRIVER, SeatClimateKind.HEAT)
+        viewModel.tapSeat(ClimateSeat.DRIVER, SeatClimateKind.HEAT)
+        viewModel.tapSeat(ClimateSeat.REAR, SeatClimateKind.HEAT)
+        val draft = viewModel.uiState.value.seatDraft!!
+        assertEquals(SeatClimateMode.MEDIUM, draft.driverHeat)
+        assertEquals(SeatClimateMode.HIGH, draft.rearHeat)
+        advanceTimeBy(GravityWatchViewModel.SEAT_TAP_SETTLE_MS - 500)
+        runCurrent()
+        assertTrue(repo.rearHeatSent.isEmpty())
+
+        // Another tap restarts the wait
+        viewModel.tapSeat(ClimateSeat.PASSENGER, SeatClimateKind.COOL)
+        advanceTimeBy(GravityWatchViewModel.SEAT_TAP_SETTLE_MS - 100)
+        runCurrent()
+        assertTrue(repo.rearHeatSent.isEmpty())
+
+        advanceUntilIdle()
+        assertEquals(listOf(SeatClimateMode.HIGH), repo.rearHeatSent)
+        assertEquals(listOf(SeatClimateMode.HIGH), repo.passengerVentSent)
+        val car = viewModel.uiState.value.activeVehicle!!
+        assertEquals(SeatClimateMode.MEDIUM, car.driverSeatHeatMode)
+        assertEquals(SeatClimateMode.HIGH, car.rearSeatHeatMode)
+        assertEquals(SeatClimateMode.HIGH, car.passengerSeatVentMode)
+        // Confirmed by the car: the draft is gone and the controls are free again
+        assertNull(viewModel.uiState.value.seatDraft)
+        assertFalse(viewModel.uiState.value.areControlsLocked)
+    }
+
+    @Test
+    fun seatTaps_backToTheCarsLevel_sendNothing() = runTest {
+        val repo = seatTestRepo()
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+
+        // High, Med, Low, Off: a full cycle ends where the car already is
+        repeat(4) { viewModel.tapSeat(ClimateSeat.DRIVER, SeatClimateKind.HEAT) }
+        advanceUntilIdle()
+        assertTrue(repo.rearHeatSent.isEmpty())
+        assertNull(viewModel.uiState.value.seatDraft)
+    }
+
+    @Test
+    fun coolingAHeatedSeat_turnsItsHeatOff() = runTest {
+        val repo = seatTestRepo().apply {
+            snapshot = snapshot.copy(driverSeatHeatMode = SeatClimateMode.HIGH)
+        }
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+
+        viewModel.tapSeat(ClimateSeat.DRIVER, SeatClimateKind.COOL)
+        advanceUntilIdle()
+        val car = viewModel.uiState.value.activeVehicle!!
+        assertEquals(SeatClimateMode.HIGH, car.driverSeatVentMode)
+        assertEquals(SeatClimateMode.OFF, car.driverSeatHeatMode)
+        // Unchanged rear heat and passenger cooling are not sent
+        assertEquals(listOf<SeatClimateMode?>(null), repo.rearHeatSent)
+        assertEquals(listOf<SeatClimateMode?>(null), repo.passengerVentSent)
     }
 
     @Test

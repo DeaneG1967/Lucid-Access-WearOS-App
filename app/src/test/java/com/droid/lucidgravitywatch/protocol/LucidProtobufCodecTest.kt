@@ -220,6 +220,43 @@ class LucidProtobufCodecTest {
             )
         )
         assertTrue(listOf(14, 15, 16).all { frontOnly.varints[it] == null })
+        // Passenger cooling is left unchanged unless given
+        assertTrue(listOf(12, 13).all { frontOnly.varints[it] == null })
+    }
+
+    @Test
+    fun seatCooling_decodesPassengerVentAndConfig_andEncodesBothPassengerVentZones() {
+        val bytes = LucidProtobufCodec.buildLoginResponseBytesForTest(
+            uid = "uid-air",
+            idToken = "token",
+            refreshToken = "refresh",
+            gigyaJwt = "jwt",
+            expiryTimeSec = 0,
+            email = "owner@lucidmotors.com",
+            firstName = "A",
+            lastName = "B",
+            vehicleId = "veh-air",
+            vin = "50EA1GBA5NA005210",
+            nickname = "PE GT",
+            passengerSeatVentCode = 5, // SEAT_CLIMATE_MODE_HIGH
+            frontVentilationAvailabilityCode = 2 // FRONT_SEATS_VENTILATION_AVAILABLE
+        )
+        val car = LucidProtobufCodec.decodeLoginResponse(bytes, LucidRegion.US).vehicles.single()
+        assertEquals(SeatClimateMode.HIGH, car.passengerSeatVentMode)
+        assertTrue(car.hasVentilatedFrontSeats)
+        assertTrue(car.showsSeatCooling)
+
+        val request = LucidProtobufCodec.parseRawFields(
+            LucidProtobufCodec.encodeSeatClimateControlRequest(
+                vehicleId = "veh-air",
+                driverHeat = SeatClimateMode.OFF,
+                driverVent = SeatClimateMode.MEDIUM,
+                passengerHeat = SeatClimateMode.OFF,
+                passengerVent = SeatClimateMode.LOW
+            )
+        )
+        assertEquals(listOf(4L, 4L), listOf(6, 7).map { request.getVarint(it) }) // driver backrest + cushion
+        assertEquals(listOf(3L, 3L), listOf(12, 13).map { request.getVarint(it) }) // passenger backrest + cushion
     }
 
     @Test

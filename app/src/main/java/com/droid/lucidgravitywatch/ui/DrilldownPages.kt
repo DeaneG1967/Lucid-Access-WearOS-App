@@ -45,11 +45,13 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.key
@@ -61,8 +63,8 @@ import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import com.droid.lucidgravitywatch.R
 import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
-import com.droid.lucidgravitywatch.model.HeatedSeat
-import com.droid.lucidgravitywatch.model.SeatClimateMode
+import com.droid.lucidgravitywatch.model.ClimateSeat
+import com.droid.lucidgravitywatch.model.SeatClimateKind
 import com.droid.lucidgravitywatch.theme.AuroraGreen
 import com.droid.lucidgravitywatch.theme.CrimsonAlert
 import com.droid.lucidgravitywatch.theme.EurekaGold
@@ -74,6 +76,7 @@ import com.droid.lucidgravitywatch.theme.StealthCard
 import com.droid.lucidgravitywatch.theme.StealthSurface
 import com.droid.lucidgravitywatch.viewmodel.GravityWatchUiState
 import com.droid.lucidgravitywatch.viewmodel.GravityWatchViewModel
+import com.droid.lucidgravitywatch.viewmodel.WatchPage
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -87,8 +90,8 @@ private const val ROTARY_PIXELS_PER_STEP = 40f
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Climate drill-down: inside temperature, target temperature and climate on/off first; seat,
- * steering wheel and defrost controls further down the list.
+ * Climate drill-down: inside temperature, target temperature, then climate on/off and max defrost
+ * side by side; buttons for the seat heat and seat cooling diagrams further down the list.
  */
 @Composable
 internal fun ClimatePage(
@@ -97,8 +100,7 @@ internal fun ClimatePage(
     onToggleClimate: () -> Unit,
     onSetTargetTemperature: (Double) -> Unit,
     onToggleDefrost: () -> Unit,
-    onSetSeatHeat: (HeatedSeat, SeatClimateMode) -> Unit,
-    onCycleSteeringHeater: () -> Unit,
+    onOpenPage: (WatchPage) -> Unit,
     onToggleTemperatureUnit: () -> Unit
 ) {
     var editingTarget by rememberSaveable { mutableStateOf(false) }
@@ -131,13 +133,6 @@ internal fun ClimatePage(
         item {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "CABIN",
-                    color = LucidSilver,
-                    fontSize = 9.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.2.sp
-                )
-                Text(
                     text = vehicle.formatTemperature(vehicle.interiorTempCelsius, useF),
                     color = Color.White,
                     fontSize = 30.sp,
@@ -162,56 +157,51 @@ internal fun ClimatePage(
             )
         }
         item {
-            ToggleRow(
-                label = if (climateOn) "Climate On" else "Climate Off",
-                detail = vehicle.hvacPower.displayName.takeIf {
-                    climateOn && vehicle.hvacPower.displayName != "On"
-                },
-                isOn = climateOn,
-                enabled = controlsEnabled,
-                onClick = onToggleClimate,
-                testTag = "climate_power_toggle"
-            )
-        }
-        item { SectionLabel("SEATS & WHEEL") }
-        val seats = buildList {
-            add(HeatedSeat.DRIVER)
-            add(HeatedSeat.PASSENGER)
-            if (vehicle.showsRearSeatHeat) add(HeatedSeat.REAR)
-        }
-        seats.forEach { seat ->
-            item(key = "seat_${seat.name}") {
-                SeatLevelRow(
-                    label = if (seat == HeatedSeat.REAR) "Rear seats" else "${seat.label} seat",
-                    current = vehicle.seatHeatMode(seat),
+            // Climate and Max Defrost side by side; each shows its state underneath.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                ToggleRow(
+                    label = "Climate",
+                    detail = if (climateOn) "On" else "Off",
+                    isOn = climateOn,
                     enabled = controlsEnabled,
-                    onSelect = { mode -> onSetSeatHeat(seat, mode) },
-                    testTag = "climate_seat_${seat.name.lowercase()}"
+                    onClick = onToggleClimate,
+                    testTag = "climate_power_toggle",
+                    modifier = Modifier.weight(1f),
+                    horizontalPadding = 6.dp
+                )
+                ToggleRow(
+                    label = "Defrost",
+                    detail = if (vehicle.defrostState.isEnabled) "Max" else "Off",
+                    isOn = vehicle.defrostState.isEnabled,
+                    enabled = controlsEnabled,
+                    onClick = onToggleDefrost,
+                    testTag = "climate_defrost_toggle",
+                    modifier = Modifier.weight(1f),
+                    horizontalPadding = 6.dp
                 )
             }
         }
+        item { SectionLabel("SEATS & WHEEL") }
         item {
-            ValueRow(
-                label = "Steering wheel",
-                value = when {
-                    !vehicle.hasOnOffSteeringHeater -> vehicle.steeringHeaterLevel.displayName
-                    vehicle.isSteeringHeaterOn -> "On"
-                    else -> "Off"
-                },
-                highlighted = vehicle.isSteeringHeaterOn,
-                enabled = controlsEnabled,
-                onClick = onCycleSteeringHeater,
-                testTag = "climate_steering_heat"
-            )
-        }
-        item {
-            ToggleRow(
-                label = "Max Defrost",
-                isOn = vehicle.defrostState.isEnabled,
-                enabled = controlsEnabled,
-                onClick = onToggleDefrost,
-                testTag = "climate_defrost_toggle"
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+                val seats = vehicle.seatClimate
+                SeatModeButton(
+                    kind = SeatClimateKind.HEAT,
+                    isActive = ClimateSeat.entries.any { seats.level(it, SeatClimateKind.HEAT).isOn } ||
+                        vehicle.isSteeringHeaterOn,
+                    onClick = { onOpenPage(WatchPage.SEAT_HEAT) }
+                )
+                if (vehicle.showsSeatCooling) {
+                    SeatModeButton(
+                        kind = SeatClimateKind.COOL,
+                        isActive = ClimateSeat.entries.any { seats.level(it, SeatClimateKind.COOL).isOn },
+                        onClick = { onOpenPage(WatchPage.SEAT_COOLING) }
+                    )
+                }
+            }
         }
         item {
             SmallChipButton(
@@ -499,7 +489,7 @@ private fun DrilldownList(
 }
 
 @Composable
-private fun PageTitle(title: String) {
+internal fun PageTitle(title: String) {
     Text(
         text = title,
         color = EurekaGold,
@@ -511,7 +501,7 @@ private fun PageTitle(title: String) {
 
 /** Why controls are frozen, or the last error; nothing when the car is ready. */
 @Composable
-private fun PageStatusLine(uiState: GravityWatchUiState) {
+internal fun PageStatusLine(uiState: GravityWatchUiState) {
     val text = uiState.errorMessage ?: uiState.controlsLockedReason ?: return
     Text(
         text = text,
@@ -574,65 +564,36 @@ private fun ValueRow(
  * layer inside the ScalingLazyColumn left rows drawn from a stale frame on a Galaxy Watch (cards
  * vanished, or a highlight border appeared around the row above).
  */
-private fun Color.dimmedUnless(enabled: Boolean): Color =
+internal fun Color.dimmedUnless(enabled: Boolean): Color =
     if (enabled) this else copy(alpha = alpha * 0.4f)
 
-private val SeatLevels = listOf(
-    SeatClimateMode.OFF,
-    SeatClimateMode.LOW,
-    SeatClimateMode.MEDIUM,
-    SeatClimateMode.HIGH
-)
-
-/** A seat's heat level as Off / Low / Med / High chips: one tap goes straight to any level. */
+/** Opens the seat heat or seat cooling diagram; ringed while any seat is using that mode. */
 @Composable
-private fun SeatLevelRow(
-    label: String,
-    current: SeatClimateMode,
-    enabled: Boolean,
-    onSelect: (SeatClimateMode) -> Unit,
-    testTag: String
-) = key(enabled, current.displayName) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
-            .background(StealthCard.dimmedUnless(enabled))
-            .border(
-                1.dp,
-                (if (current.displayName != "Off") EurekaGold else StealthBorder).dimmedUnless(enabled),
-                RoundedCornerShape(20.dp)
+private fun SeatModeButton(kind: SeatClimateKind, isActive: Boolean, onClick: () -> Unit) {
+    val accent = kind.accent()
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(CircleShape)
+                .background(StealthCard)
+                .border(if (isActive) 2.dp else 1.dp, if (isActive) accent else StealthBorder, CircleShape)
+                .clickable(onClick = onClick)
+                .semantics { contentDescription = "Seat ${kind.label}" }
+                .testTag(if (kind == SeatClimateKind.HEAT) "climate_seat_heat_button" else "climate_seat_cooling_button"),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                painter = painterResource(
+                    id = if (kind == SeatClimateKind.HEAT) R.drawable.seat_heat_24px else R.drawable.seat_cool_24px
+                ),
+                contentDescription = null,
+                tint = if (isActive) accent else LucidPlatinum,
+                modifier = Modifier.size(24.dp)
             )
-            .padding(horizontal = 8.dp, vertical = 6.dp)
-            .testTag(testTag),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(text = label, color = LucidPlatinum.dimmedUnless(enabled), fontSize = 11.sp, maxLines = 1)
-        Spacer(modifier = Modifier.height(4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            SeatLevels.forEach { level ->
-                // The car reports an unset level as UNKNOWN, which is shown as Off.
-                val selected = current.displayName == level.displayName
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .background((if (selected) EurekaGold else StealthSurface).dimmedUnless(enabled))
-                        .clickable(enabled = enabled && !selected) { onSelect(level) }
-                        .padding(horizontal = 7.dp, vertical = 5.dp)
-                        .semantics { contentDescription = "$label ${level.displayName}" }
-                        .testTag("${testTag}_${level.name.lowercase()}"),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = level.displayName,
-                        color = if (selected) ObsidianBlack else LucidPlatinum.dimmedUnless(enabled),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1
-                    )
-                }
-            }
         }
+        Spacer(modifier = Modifier.height(3.dp))
+        Text(kind.label, color = LucidSilver, fontSize = 10.sp)
     }
 }
 
@@ -645,10 +606,12 @@ private fun ToggleRow(
     onClick: () -> Unit,
     testTag: String,
     detail: String? = null,
-    onColor: Color = AuroraGreen
+    onColor: Color = AuroraGreen,
+    modifier: Modifier = Modifier,
+    horizontalPadding: Dp = 14.dp
 ) = key(enabled, isOn) {
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
             .background((if (isOn) onColor.copy(alpha = 0.22f) else StealthCard).dimmedUnless(enabled))
@@ -658,7 +621,7 @@ private fun ToggleRow(
                 RoundedCornerShape(20.dp)
             )
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 9.dp)
+            .padding(horizontal = horizontalPadding, vertical = 9.dp)
             .semantics { contentDescription = "$label ${if (isOn) "on" else "off"}" }
             .testTag(testTag),
         horizontalAlignment = Alignment.CenterHorizontally

@@ -24,11 +24,12 @@ import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.DefrostState
 import com.droid.lucidgravitywatch.model.DoorState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
-import com.droid.lucidgravitywatch.model.HeatedSeat
+import com.droid.lucidgravitywatch.model.ClimateSeat
 import com.droid.lucidgravitywatch.model.HvacPower
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.PowerState
+import com.droid.lucidgravitywatch.model.SeatClimateKind
 import com.droid.lucidgravitywatch.model.SeatClimateMode
 import com.droid.lucidgravitywatch.model.SteeringWheelHeaterLevel
 import com.droid.lucidgravitywatch.model.VehicleModel
@@ -440,7 +441,7 @@ class GravityWatchAppUiTest {
     fun climatePage_showsTemperatures_togglesClimate_andSetsTargetOnlyOnConfirm() {
         var climateToggled = 0
         val targets = mutableListOf<Double>()
-        val seatSettings = mutableListOf<Pair<HeatedSeat, SeatClimateMode>>()
+        val pages = mutableListOf<WatchPage>()
 
         composeTestRule.setContent {
             LucidGravityWatchTheme {
@@ -450,7 +451,7 @@ class GravityWatchAppUiTest {
                     onLogin = { _, _, _ -> },
                     onToggleClimatePrecondition = { climateToggled++ },
                     onSetTargetTemperature = { targets += it },
-                    onSetSeatHeat = { seat, mode -> seatSettings += seat to mode }
+                    onOpenPage = { pages += it }
                 )
             }
         }
@@ -479,14 +480,74 @@ class GravityWatchAppUiTest {
         composeTestRule.onNodeWithTag("target_temp_cancel").performClick()
         assertEquals(1, targets.size)
 
-        // Seat controls sit further down the list
+        // Seat heat/cooling buttons sit further down the list and open the seat diagrams
         composeTestRule.onNodeWithTag("climate_page").performTouchInput { swipeUp() }
-        // Seat heat: one tap goes straight to a level; the current level (driver Low) is not resent
-        composeTestRule.onNodeWithTag("climate_seat_driver_off").performScrollTo().performClick()
-        composeTestRule.onNodeWithTag("climate_seat_driver_low").performClick()
-        assertEquals(listOf(HeatedSeat.DRIVER to SeatClimateMode.OFF), seatSettings)
-        // sampleGravity has no heated rear seats
-        composeTestRule.onNodeWithTag("climate_seat_rear").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("climate_seat_heat_button").performScrollTo().performClick()
+        assertEquals(listOf(WatchPage.SEAT_HEAT), pages)
+        // sampleGravity has no ventilated seats
+        composeTestRule.onNodeWithTag("climate_seat_cooling_button").assertDoesNotExist()
+    }
+
+    @Test
+    fun seatHeatPage_tapsSeatsAndWheel_andBackGoesToClimate() {
+        val taps = mutableListOf<Pair<ClimateSeat, SeatClimateKind>>()
+        var wheelTaps = 0
+        val pages = mutableListOf<WatchPage>()
+        val vehicle = sampleGravity.copy(hasHeatedRearSeats = true, hasVentilatedFrontSeats = true)
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(WatchPage.SEAT_HEAT, vehicle),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onOpenPage = { pages += it },
+                    onTapSeat = { seat, kind -> taps += seat to kind },
+                    onTapSteeringWheel = { wheelTaps++ }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("seat_heat_page").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("seat_zone_driver").performClick()
+        composeTestRule.onNodeWithTag("seat_zone_passenger").performClick()
+        composeTestRule.onNodeWithTag("seat_zone_rear").performClick()
+        composeTestRule.onNodeWithTag("seat_zone_steering_wheel").performClick()
+        assertEquals(
+            listOf(
+                ClimateSeat.DRIVER to SeatClimateKind.HEAT,
+                ClimateSeat.PASSENGER to SeatClimateKind.HEAT,
+                ClimateSeat.REAR to SeatClimateKind.HEAT
+            ),
+            taps
+        )
+        assertEquals(1, wheelTaps)
+
+        composeTestRule.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        assertEquals(listOf(WatchPage.CLIMATE), pages)
+    }
+
+    @Test
+    fun seatCoolingPage_showsFrontSeatsOnly() {
+        val taps = mutableListOf<Pair<ClimateSeat, SeatClimateKind>>()
+        val vehicle = sampleGravity.copy(hasHeatedRearSeats = true, hasVentilatedFrontSeats = true)
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(WatchPage.SEAT_COOLING, vehicle),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onTapSeat = { seat, kind -> taps += seat to kind }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("seat_cooling_page").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("seat_zone_rear").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("seat_zone_steering_wheel").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("seat_zone_driver").performClick()
+        assertEquals(listOf(ClimateSeat.DRIVER to SeatClimateKind.COOL), taps)
     }
 
     @Test

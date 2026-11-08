@@ -58,7 +58,8 @@ interface LucidVehicleRepository {
         driverHeat: SeatClimateMode,
         driverVent: SeatClimateMode,
         passengerHeat: SeatClimateMode,
-        rearHeat: SeatClimateMode? = null
+        rearHeat: SeatClimateMode? = null,
+        passengerVent: SeatClimateMode? = null
     ): GravityVehicleSnapshot
 
     suspend fun setSteeringWheelHeater(
@@ -439,7 +440,8 @@ class LucidCloudVehicleRepository(
         driverHeat: SeatClimateMode,
         driverVent: SeatClimateMode,
         passengerHeat: SeatClimateMode,
-        rearHeat: SeatClimateMode?
+        rearHeat: SeatClimateMode?,
+        passengerVent: SeatClimateMode?
     ): GravityVehicleSnapshot {
         val session = ensureValidSession()
         if (!isDemoSession(session)) {
@@ -452,7 +454,8 @@ class LucidCloudVehicleRepository(
                     driverHeat = driverHeat,
                     driverVent = driverVent,
                     passengerHeat = passengerHeat,
-                    rearHeat = rearHeat
+                    rearHeat = rearHeat,
+                    passengerVent = passengerVent
                 ),
                 bearerToken = session.idToken
             )
@@ -462,6 +465,7 @@ class LucidCloudVehicleRepository(
             driverSeatVentMode = driverVent,
             passengerSeatHeatMode = passengerHeat,
             rearSeatHeatMode = rearHeat ?: vehicle.rearSeatHeatMode,
+            passengerSeatVentMode = passengerVent ?: vehicle.passengerSeatVentMode,
             powerState = if (vehicle.powerState.isSleeping) PowerState.CLOUD_1 else vehicle.powerState,
             lastUpdatedMs = System.currentTimeMillis()
         )
