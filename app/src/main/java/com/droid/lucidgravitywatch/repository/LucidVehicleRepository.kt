@@ -80,6 +80,9 @@ interface LucidVehicleRepository {
         limitPercent: Int
     ): GravityVehicleSnapshot
 
+    /** AC charging current limit (charge rate) in amps. */
+    suspend fun setAcCurrentLimit(vehicle: GravityVehicleSnapshot, amps: Int): GravityVehicleSnapshot
+
     suspend fun setChargingActive(
         vehicle: GravityVehicleSnapshot,
         active: Boolean
@@ -585,6 +588,32 @@ class LucidCloudVehicleRepository(
         return updated
     }
 
+    override suspend fun setAcCurrentLimit(
+        vehicle: GravityVehicleSnapshot,
+        amps: Int
+    ): GravityVehicleSnapshot {
+        val session = ensureValidSession()
+        if (!isDemoSession(session)) {
+            ensureAwakeIfRequired(session, vehicle)
+            transport.unaryCall(
+                region = session.region,
+                serviceMethod = METHOD_SET_AC_CURRENT_LIMIT,
+                requestProtobuf = LucidProtobufCodec.encodeSetAcCurrentLimitRequest(
+                    vehicleId = vehicle.vehicleId,
+                    amps = amps
+                ),
+                bearerToken = session.idToken
+            )
+        }
+        val updated = vehicle.copy(
+            sessionAcCurrentLimitAmps = amps,
+            powerState = if (vehicle.powerState.isSleeping) PowerState.CLOUD_1 else vehicle.powerState,
+            lastUpdatedMs = System.currentTimeMillis()
+        )
+        if (isDemoSession(session)) demoVehicleSnapshot = updated
+        return updated
+    }
+
     override suspend fun setChargeLimit(
         vehicle: GravityVehicleSnapshot,
         limitPercent: Int
@@ -735,6 +764,7 @@ class LucidCloudVehicleRepository(
         const val METHOD_STEERING_WHEEL_HEATER = "/mobilegateway.protos.VehicleStateService/SteeringWheelHeater"
         const val METHOD_SET_BATTERY_PRECON = "/mobilegateway.protos.VehicleStateService/SetBatteryPrecon"
         const val METHOD_SET_CHARGE_LIMIT = "/mobilegateway.protos.VehicleStateService/SetChargeLimit"
+        const val METHOD_SET_AC_CURRENT_LIMIT = "/mobilegateway.protos.VehicleStateService/SetACCurrLimit"
         const val METHOD_CHARGE_CONTROL = "/mobilegateway.protos.VehicleStateService/ChargeControl"
         const val METHOD_LIGHTS_CONTROL = "/mobilegateway.protos.VehicleStateService/LightsControl"
         const val METHOD_HONK_HORN = "/mobilegateway.protos.VehicleStateService/HonkHorn"

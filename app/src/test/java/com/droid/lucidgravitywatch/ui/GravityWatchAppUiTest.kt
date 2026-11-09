@@ -7,6 +7,7 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -588,6 +589,7 @@ class GravityWatchAppUiTest {
         var chargingToggled = 0
         var portToggled = 0
         val limits = mutableListOf<Int>()
+        val rates = mutableListOf<Int>()
 
         composeTestRule.setContent {
             LucidGravityWatchTheme {
@@ -597,19 +599,21 @@ class GravityWatchAppUiTest {
                     onLogin = { _, _, _ -> },
                     onToggleCharging = { chargingToggled++ },
                     onToggleChargePort = { portToggled++ },
-                    onSetChargeLimit = { limits += it }
+                    onSetChargeLimit = { limits += it },
+                    onSetChargeCurrentLimit = { rates += it }
                 )
             }
         }
 
-        // Unplugged: start/stop is shown but disabled
-        composeTestRule.onNodeWithText("Not Plugged In").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("charging_start_stop").performClick()
-        assertEquals(0, chargingToggled)
+        // Unplugged: the charge port is offered, start/stop is not
+        composeTestRule.onNodeWithTag("charging_start_stop").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("charging_port_toggle").performClick()
+        assertEquals(1, portToggled)
 
-        // Plugged in: Start Charging fires immediately
+        // Plugged in: the port is no longer offered; Start Charging fires immediately
         vehicle.value = vehicle.value.copy(chargeState = ChargeState.CABLE_CONNECTED)
         composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("charging_port_toggle").assertDoesNotExist()
         composeTestRule.onNodeWithText("Start Charging").performClick()
         assertEquals(1, chargingToggled)
 
@@ -628,8 +632,29 @@ class GravityWatchAppUiTest {
         composeTestRule.onNodeWithTag("charge_limit_confirm").performClick()
         assertEquals(listOf(86), limits)
 
-        composeTestRule.onNodeWithTag("charging_port_toggle").performScrollTo().performClick()
-        assertEquals(1, portToggled)
+        // Charge rate: unknown (--) starts the editor at 80 A; minus once -> 75 A (5 A steps)
+        composeTestRule.onNodeWithTag("charging_rate_row").performClick()
+        composeTestRule.onNodeWithTag("charge_rate_decrease").performClick()
+        composeTestRule.onNodeWithTag("charge_rate_confirm").performClick()
+        assertEquals(listOf(75), rates)
+
+        // Touching the top of the arc picks the middle of the range: 10..80 A -> 45 A
+        composeTestRule.onNodeWithTag("charging_rate_row").performClick()
+        composeTestRule.onNodeWithTag("charge_rate_arc").performTouchInput {
+            val radius = minOf(width, height) / 2f - VALUE_ARC_INSET.toPx()
+            down(Offset(centerX, centerY - radius))
+            up()
+        }
+        composeTestRule.onNodeWithTag("charge_rate_confirm").performClick()
+        assertEquals(listOf(75, 45), rates)
+
+        // -/+ snap to multiples of 5 A from an in-between rate: 23 A, minus -> 20 A
+        vehicle.value = vehicle.value.copy(sessionAcCurrentLimitAmps = 23)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("charging_rate_row").performClick()
+        composeTestRule.onNodeWithTag("charge_rate_decrease").performClick()
+        composeTestRule.onNodeWithTag("charge_rate_confirm").performClick()
+        assertEquals(listOf(75, 45, 20), rates)
     }
 
     @Test

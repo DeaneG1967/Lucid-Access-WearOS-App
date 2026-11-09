@@ -409,6 +409,19 @@ class LucidProtobufCodecTest {
         assertEquals(DoorState.OPEN, decoded.frunkState)
         assertEquals(66.0, decoded.batteryPercent, 0.01)
 
+        // AC current limit (charge rate)
+        assertEquals(
+            80,
+            LucidProtobufCodec.decodeGetVehicleStateResponse(
+                LucidProtobufCodec.buildGetVehicleStateResponseBytesForTest(vehicleId = "v-1", acCurrentLimitAmps = 80),
+                decoded
+            ).acCurrentLimitAmps
+        )
+        assertArrayEquals(
+            byteArrayOf(0x08, 0x28, 0x12, 0x03) + "v-1".toByteArray(),
+            LucidProtobufCodec.encodeSetAcCurrentLimitRequest("v-1", amps = 40)
+        )
+
         // Window positions: closed vs vented
         assertFalse(
             LucidProtobufCodec.decodeGetVehicleStateResponse(

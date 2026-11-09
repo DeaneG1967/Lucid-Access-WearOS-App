@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.droid.lucidgravitywatch.model.BatteryPreconStatus
+import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.DefrostState
 import com.droid.lucidgravitywatch.model.DoorState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
@@ -164,6 +165,8 @@ class GravityWatchViewModel(
         const val RATE_LIMITED_POLL_INTERVAL_MS = 15_000L
         /** How long polling stays at [FAST_POLL_INTERVAL_MS] after a command is sent. */
         const val FAST_POLL_WINDOW_MS = 10_000L
+        /** Longest fast polling while waiting for a started charge to begin (see [pollFastUntil]). */
+        const val CHARGE_START_FAST_POLL_MAX_MS = 120_000L
         /** How long polling stays at [RATE_LIMITED_POLL_INTERVAL_MS] after a rate-limit error. */
         const val RATE_LIMIT_BACKOFF_MS = 60_000L
         const val STATE_CONFIRMATION_TIMEOUT_MS = 45_000L
@@ -182,6 +185,19 @@ class GravityWatchViewModel(
         const val MAX_CABIN_TEMP_C = 29.5
         const val MIN_CHARGE_LIMIT_PERCENT = 50
         const val MAX_CHARGE_LIMIT_PERCENT = 100
+        /**
+         * Charge rate (AC current limit) range offered on the watch. 80 A is what a Lucid Air
+         * reported on an 80 A charger; 10 A is a guess at the low end, to see what the car accepts.
+         */
+        const val MIN_CHARGE_CURRENT_AMPS = 10
+        const val MAX_CHARGE_CURRENT_AMPS = 80
+
+        /** The highest charge rate to offer: what the car says is available, up to [MAX_CHARGE_CURRENT_AMPS]. */
+        fun maxChargeCurrentAmps(vehicle: GravityVehicleSnapshot): Int =
+            vehicle.acCurrentLimitAmps
+                .takeIf { it >= MIN_CHARGE_CURRENT_AMPS }
+                ?.coerceAtMost(MAX_CHARGE_CURRENT_AMPS)
+                ?: MAX_CHARGE_CURRENT_AMPS
         /** Seat diagram taps are sent once there has been no tap for this long. */
         const val SEAT_TAP_SETTLE_MS = 1_500L
         private const val GRPC_RESOURCE_EXHAUSTED = 8
@@ -203,6 +219,12 @@ class GravityWatchViewModel(
     private var expectedCondition: ExpectedCondition? = null
     private var awaitingPostCommandPoll: Boolean = false
     private var vehicleListJob: Job? = null
+    /**
+     * Keeps polling at [FAST_POLL_INTERVAL_MS] until a poll satisfies this (or its time cap runs
+     * out), after the controls are released: a started charge goes through Preparing first.
+     */
+    private var fastPollUntil: ((GravityVehicleSnapshot) -> Boolean)? = null
+    private var fastPollUntilJob: Job? = null
     /** Sends the seat draft once taps settle. */
     private var seatSendJob: Job? = null
     /** True once the seat draft has been sent; it is then kept until the command settles. */
@@ -312,8 +334,32 @@ class GravityWatchViewModel(
     private fun resolvePollIntervalMs(): Long = when {
         rateLimitBackoffJob?.isActive == true -> RATE_LIMITED_POLL_INTERVAL_MS
         !_uiState.value.isInteractive -> AMBIENT_POLL_INTERVAL_MS
-        fastPollWindowJob?.isActive == true || _uiState.value.isWakingVehicle -> FAST_POLL_INTERVAL_MS
+        fastPollWindowJob?.isActive == true || fastPollUntil != null || _uiState.value.isWakingVehicle ->
+            FAST_POLL_INTERVAL_MS
         else -> IDLE_POLL_INTERVAL_MS
+    }
+
+    /**
+     * Polls every second until a poll satisfies [done], for at most [maxMs]; independent of
+     * pending commands, so the controls can be free meanwhile.
+     */
+    private fun pollFastUntil(maxMs: Long, done: (GravityVehicleSnapshot) -> Boolean) {
+        fastPollUntil = done
+        fastPollUntilJob?.cancel()
+        fastPollUntilJob = viewModelScope.launch {
+            delay(maxMs)
+            stopFastPollUntil("time cap")
+        }
+        activateFastPolling()
+    }
+
+    private fun stopFastPollUntil(reason: String) {
+        if (fastPollUntil == null) return
+        Log.d(TAG, "Fast polling ended: $reason")
+        fastPollUntil = null
+        fastPollUntilJob?.cancel()
+        fastPollUntilJob = null
+        _uiState.update { it.copy(currentPollIntervalMs = resolvePollIntervalMs()) }
     }
 
     /** Polls every second for [FAST_POLL_WINDOW_MS] so a command's effect shows up promptly. */
@@ -400,6 +446,7 @@ class GravityWatchViewModel(
             )
             if (polledVehicle != null) {
                 reconcileExpectedChanges(polledVehicle)
+                if (fastPollUntil?.invoke(polledVehicle) == true) stopFastPollUntil("reached")
             }
             val liveReports = polledVehicle?.let { observeReport(it) } ?: false
             val reachable = polledVehicle?.powerState?.isAwake == true || liveReports
@@ -718,6 +765,7 @@ class GravityWatchViewModel(
             discardSeatDraft()
             maxAcRestore = null
             defrostRestore = null
+            stopFastPollUntil("vehicle changed")
             awaitingPostCommandPoll = false
             resetReportTracking()
             _uiState.update {
@@ -905,6 +953,11 @@ class GravityWatchViewModel(
 
     fun toggleChargePort() {
         val current = controllableVehicle("toggle charge port") ?: return
+        if (current.chargeState.isCablePluggedIn) {
+            // The car won't move the port door with a cable connected.
+            Log.i(TAG, "Ignoring \"toggle charge port\": charge cable connected")
+            return
+        }
         val open = !current.chargePortState.isOpen
         val nextState = if (open) DoorState.OPEN else DoorState.CLOSED
         executeConfirmedCommand(
@@ -1191,6 +1244,20 @@ class GravityWatchViewModel(
         }
     }
 
+    /** Sets the AC charging current limit (charge rate). */
+    fun setChargeCurrentLimit(amps: Int) {
+        val current = controllableVehicle("set charge rate") ?: return
+        val clamped = amps.coerceIn(MIN_CHARGE_CURRENT_AMPS, maxChargeCurrentAmps(current))
+        executeConfirmedCommand(
+            current,
+            actionLabel = "Charge Rate $clamped A",
+            expectation = "charge rate $clamped A",
+            isMet = { it.sessionAcCurrentLimitAmps == clamped }
+        ) { vehicle ->
+            repository.setAcCurrentLimit(vehicle, clamped)
+        }
+    }
+
     /** Starts charging when a cable is connected and the car is not charging; otherwise stops it. */
     fun toggleCharging() {
         val current = controllableVehicle("toggle charging") ?: return
@@ -1199,13 +1266,24 @@ class GravityWatchViewModel(
             Log.i(TAG, "Ignoring \"start charging\": no charge cable connected")
             return
         }
+        if (!startCharging) {
+            stopCharging()
+            return
+        }
+        // The car has taken the command once it reports a starting stage (Connecting ... Preparing),
+        // which can last a while before Charging: release the controls then, but keep polling fast
+        // until it is actually charging.
         executeConfirmedCommand(
             current,
-            actionLabel = if (startCharging) "Starting Charge" else "Stopping Charge",
-            expectation = if (startCharging) "charging started" else "charging stopped",
-            isMet = { it.chargeState.isActivelyCharging == startCharging }
+            actionLabel = "Starting Charge",
+            expectation = "charging starting",
+            isMet = { it.chargeState.isActivelyCharging || it.chargeState.isStartingCharge }
         ) { vehicle ->
-            repository.setChargingActive(vehicle, startCharging)
+            repository.setChargingActive(vehicle, true)
+        }
+        pollFastUntil(CHARGE_START_FAST_POLL_MAX_MS) {
+            it.chargeState.isActivelyCharging || !it.chargeState.isCablePluggedIn ||
+                it.chargeState == ChargeState.CHARGING_END_ERROR
         }
     }
 
@@ -1246,6 +1324,7 @@ class GravityWatchViewModel(
         discardSeatDraft()
         maxAcRestore = null
         defrostRestore = null
+        stopFastPollUntil("signed out")
         awaitingPostCommandPoll = false
         resetReportTracking()
         repository.logout()

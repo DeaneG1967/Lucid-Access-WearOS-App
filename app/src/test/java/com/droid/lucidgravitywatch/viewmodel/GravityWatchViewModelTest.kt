@@ -253,6 +253,14 @@ class GravityWatchViewModelTest {
             return snapshot
         }
 
+        override suspend fun setAcCurrentLimit(
+            vehicle: GravityVehicleSnapshot,
+            amps: Int
+        ): GravityVehicleSnapshot {
+            snapshot = snapshot.copy(sessionAcCurrentLimitAmps = amps)
+            return snapshot
+        }
+
         override suspend fun setMaxAc(
             vehicle: GravityVehicleSnapshot,
             enabled: Boolean
@@ -321,6 +329,7 @@ class GravityWatchViewModelTest {
             active: Boolean
         ): GravityVehicleSnapshot {
             chargingCommandCount++
+            if (deferCloudStateUpdateOnCommand) return vehicle
             snapshot = snapshot.copy(
                 chargeState = if (active) ChargeState.CHARGING else ChargeState.CHARGING_STOPPED
             )
@@ -426,10 +435,21 @@ class GravityWatchViewModelTest {
         advanceUntilIdle()
         assertEquals(DoorState.CLOSED, viewModel.uiState.value.activeVehicle?.rearTrunkState)
 
-        // Toggle Charge Port -> OPEN and back -> CLOSED
+        // Toggle Charge Port -> OPEN and back -> CLOSED (unplugged; the port can't move on a cable)
+        repo.snapshot = repo.snapshot.copy(chargeState = ChargeState.NOT_CONNECTED)
+        viewModel.refreshVehicles()
+        advanceUntilIdle()
         viewModel.toggleChargePort()
         advanceUntilIdle()
         assertEquals(DoorState.OPEN, viewModel.uiState.value.activeVehicle?.chargePortState)
+        viewModel.toggleChargePort()
+        advanceUntilIdle()
+        assertEquals(DoorState.CLOSED, viewModel.uiState.value.activeVehicle?.chargePortState)
+
+        // With a cable connected, port commands are not sent
+        repo.snapshot = repo.snapshot.copy(chargeState = ChargeState.CABLE_CONNECTED)
+        viewModel.refreshVehicles()
+        advanceUntilIdle()
         viewModel.toggleChargePort()
         advanceUntilIdle()
         assertEquals(DoorState.CLOSED, viewModel.uiState.value.activeVehicle?.chargePortState)
@@ -480,6 +500,15 @@ class GravityWatchViewModelTest {
             SteeringWheelHeaterLevel.LEVEL_3,
             viewModel.uiState.value.activeVehicle?.steeringHeaterLevel
         )
+
+        // Charge rate 40 A, clamped to the 10 A minimum below it
+        viewModel.setChargeCurrentLimit(40)
+        advanceUntilIdle()
+        assertEquals(40, viewModel.uiState.value.activeVehicle!!.sessionAcCurrentLimitAmps)
+        viewModel.setChargeCurrentLimit(4)
+        advanceUntilIdle()
+        assertEquals(GravityWatchViewModel.MIN_CHARGE_CURRENT_AMPS, viewModel.uiState.value.activeVehicle!!.sessionAcCurrentLimitAmps)
+        assertFalse(viewModel.uiState.value.areControlsLocked)
 
         // Adjust Charge Limit to 90%
         viewModel.setChargeLimit(90)
@@ -1178,6 +1207,43 @@ class GravityWatchViewModelTest {
         advanceUntilIdle()
         assertEquals(DefrostState.OFF, viewModel.uiState.value.activeVehicle!!.defrostState)
         assertTrue(viewModel.uiState.value.activeVehicle!!.hvacPower.isActive)
+    }
+
+    @Test
+    fun startCharging_releasesControlsAtPreparing_butKeepsPollingFastUntilCharging() = runTest {
+        val repo = FakeLucidVehicleRepository().apply {
+            snapshot = snapshot.copy(powerState = PowerState.CLOUD_1, chargeState = ChargeState.CABLE_CONNECTED)
+            deferCloudStateUpdateOnCommand = true
+        }
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+        viewModel.setInteractivePowerState(true)
+        try {
+            runCurrent()
+            viewModel.toggleCharging()
+            runCurrent()
+            assertTrue(viewModel.uiState.value.areControlsLocked)
+
+            // The car starts preparing: the command is taken, the controls are free again...
+            repo.snapshot = repo.snapshot.copy(chargeState = ChargeState.CHARGER_PREPARATION)
+            advanceTimeBy(GravityWatchViewModel.FAST_POLL_INTERVAL_MS)
+            runCurrent()
+            assertFalse(viewModel.uiState.value.areControlsLocked)
+
+            // ...but polling stays fast past the usual window while it prepares
+            advanceTimeBy(GravityWatchViewModel.FAST_POLL_WINDOW_MS + 5_000)
+            runCurrent()
+            assertEquals(GravityWatchViewModel.FAST_POLL_INTERVAL_MS, viewModel.uiState.value.currentPollIntervalMs)
+
+            // Charging: back to the normal interval
+            repo.snapshot = repo.snapshot.copy(chargeState = ChargeState.CHARGING)
+            advanceTimeBy(GravityWatchViewModel.FAST_POLL_INTERVAL_MS)
+            runCurrent()
+            assertEquals(GravityWatchViewModel.IDLE_POLL_INTERVAL_MS, viewModel.uiState.value.currentPollIntervalMs)
+        } finally {
+            viewModel.suspendPolling()
+        }
     }
 
     @Test

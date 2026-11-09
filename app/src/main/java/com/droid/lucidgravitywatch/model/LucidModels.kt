@@ -123,6 +123,11 @@ enum class ChargeState(val protoValue: Int, val displayName: String) {
     val isActivelyCharging: Boolean
         get() = this == CHARGING
 
+    /** The car is working towards charging: it has taken a start command (or a fresh plug-in). */
+    val isStartingCharge: Boolean
+        get() = this == ESTABLISHING_SESSION || this == AUTHORIZING_PNC || this == AUTHORIZING_EXTERNAL ||
+            this == AUTHORIZED || this == CHARGER_PREPARATION
+
     val isCablePluggedIn: Boolean
         get() = this != UNKNOWN && this != NOT_CONNECTED
 
@@ -394,7 +399,14 @@ data class GravityVehicleSnapshot(
     /** From the vehicle config: the front seats are ventilated (cooled). */
     val hasVentilatedFrontSeats: Boolean = false,
     /** Any side window is open (vented or lower); see LucidProtobufCodec for the positions counted. */
-    val windowsOpen: Boolean = false
+    val windowsOpen: Boolean = false,
+    /**
+     * The most AC current available, in amps (0 when not reported): on an Air with an 80 A charger
+     * this stayed 80 while the charge rate was set lower.
+     */
+    val acCurrentLimitAmps: Int = 0,
+    /** The charge rate: the active session's AC current limit in amps, as set (0 when not reported). */
+    val sessionAcCurrentLimitAmps: Int = 0
 ) {
     val seatClimate: SeatClimateSettings
         get() = SeatClimateSettings(

@@ -410,7 +410,9 @@ object LucidProtobufCodec {
                 chargeLimitPercent = previous.chargeLimitPercent,
                 chargeRateKw = previous.chargeRateKw,
                 chargeRateMph = previous.chargeRateMph,
-                sessionMinutesRemaining = previous.sessionMinutesRemaining
+                sessionMinutesRemaining = previous.sessionMinutesRemaining,
+                acCurrentLimitAmps = previous.acCurrentLimitAmps,
+                sessionAcCurrentLimitAmps = previous.sessionAcCurrentLimitAmps
             )
         }
         if (missing(17)) {
@@ -517,6 +519,9 @@ object LucidProtobufCodec {
         val chargeRateKw = charging?.getDouble(19) ?: 0.0
         val chargeRateMph = charging?.getDouble(12) ?: 0.0
         val chargeLimitDouble = charging?.getDouble(14) ?: 0.0
+        // SetACCurrLimit changes field 29; field 30 stayed at the charger's 80 A.
+        val sessionAcCurrentLimitAmps = charging?.getInt(29) ?: 0 // active_session_ac_current_limit
+        val acCurrentLimitAmps = charging?.getInt(30) ?: 0 // energy_ac_current_limit
         val resolvedChargeLimit = if (chargeLimitDouble > 0.0) {
             chargeLimitDouble.roundToInt()
         } else if (chargeLimitInt > 0) {
@@ -570,6 +575,8 @@ object LucidProtobufCodec {
             chargeRateKw = chargeRateKw,
             chargeRateMph = chargeRateMph,
             sessionMinutesRemaining = sessionMinutesRemaining,
+            acCurrentLimitAmps = acCurrentLimitAmps,
+            sessionAcCurrentLimitAmps = sessionAcCurrentLimitAmps,
             interiorTempCelsius = interiorTempCelsius,
             exteriorTempCelsius = exteriorTempCelsius,
             targetTempCelsius = targetTempCelsius,
@@ -750,6 +757,14 @@ object LucidProtobufCodec {
         return writer.toByteArray()
     }
 
+    /** SetACCurrLimit: the AC charging current limit in amps. */
+    fun encodeSetAcCurrentLimitRequest(vehicleId: String, amps: Int): ByteArray {
+        val writer = ProtoWriter()
+        writer.writeIntField(1, amps)
+        writer.writeStringField(2, vehicleId)
+        return writer.toByteArray()
+    }
+
     fun encodeSetChargeLimitRequest(vehicleId: String, limitPercent: Int): ByteArray {
         val writer = ProtoWriter()
         writer.writeIntField(1, limitPercent.coerceIn(50, 100))
@@ -921,7 +936,8 @@ object LucidProtobufCodec {
         batteryPercent: Double = 80.0,
         interiorTempC: Double = 21.0,
         exteriorTempC: Double = 18.0,
-        windowStatusCode: Int = 0
+        windowStatusCode: Int = 0,
+        acCurrentLimitAmps: Int = 0
     ): ByteArray {
         val vehicleBytes = buildVehicleProtoBytes(
             vehicleId = vehicleId,
@@ -933,7 +949,8 @@ object LucidProtobufCodec {
             batteryPercent = batteryPercent,
             interiorTempC = interiorTempC,
             exteriorTempC = exteriorTempC,
-            windowStatusCode = windowStatusCode
+            windowStatusCode = windowStatusCode,
+            acCurrentLimitAmps = acCurrentLimitAmps
         )
         val stateBytes = parseRawFields(vehicleBytes).bytesList.getValue(4).last()
         return ProtoWriter().apply {
@@ -983,7 +1000,8 @@ object LucidProtobufCodec {
         odometerKm: Double = 1200.0,
         softwareVersion: String = "2.5.10",
         lastUpdatedMs: Long = 1792113000000L,
-        windowStatusCode: Int = 0
+        windowStatusCode: Int = 0,
+        acCurrentLimitAmps: Int = 0
     ): ByteArray {
         val configBytes = ProtoWriter().apply {
             writeStringField(1, vin)
@@ -1037,6 +1055,10 @@ object LucidProtobufCodec {
             writeDoubleField(19, chargeRateKw)
             writeDoubleField(12, chargeRateMph)
             writeDoubleField(14, chargeLimitPercent)
+            if (acCurrentLimitAmps != 0) {
+                writeIntField(29, acCurrentLimitAmps)
+                writeIntField(30, acCurrentLimitAmps)
+            }
         }.toByteArray()
 
         val seatsBytes = ProtoWriter().apply {

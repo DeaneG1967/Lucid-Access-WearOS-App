@@ -119,6 +119,7 @@ fun GravityWatchApp(viewModel: GravityWatchViewModel) {
         onTapSteeringWheel = viewModel::tapSteeringWheel,
         onToggleBatteryPrecon = viewModel::toggleBatteryPreconditioning,
         onSetChargeLimit = viewModel::setChargeLimit,
+        onSetChargeCurrentLimit = viewModel::setChargeCurrentLimit,
         onToggleCharging = viewModel::toggleCharging,
         onStopCharging = viewModel::stopCharging,
         onFlashLights = viewModel::flashLights,
@@ -153,6 +154,7 @@ fun GravityWatchScreen(
     onTapSteeringWheel: () -> Unit = {},
     onToggleBatteryPrecon: () -> Unit = {},
     onSetChargeLimit: (Int) -> Unit = {},
+    onSetChargeCurrentLimit: (Int) -> Unit = {},
     onToggleCharging: () -> Unit = {},
     onStopCharging: () -> Unit = {},
     onFlashLights: () -> Unit = {},
@@ -275,6 +277,7 @@ fun GravityWatchScreen(
                                     uiState = uiState,
                                     vehicle = activeVehicle!!,
                                     onSetChargeLimit = onSetChargeLimit,
+                                    onSetChargeCurrentLimit = onSetChargeCurrentLimit,
                                     onToggleCharging = onToggleCharging,
                                     onToggleChargePort = onToggleChargePort
                                 )

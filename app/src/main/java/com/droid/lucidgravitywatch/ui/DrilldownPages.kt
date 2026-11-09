@@ -1,6 +1,7 @@
 package com.droid.lucidgravitywatch.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -46,8 +47,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.rotary.onRotaryScrollEvent
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -87,8 +96,13 @@ import kotlin.math.roundToInt
 
 private val StatusYellow = Color(0xFFFFEA00)
 
-/** Crown/bezel scroll distance that moves an edited value by one step. */
-private const val ROTARY_PIXELS_PER_STEP = 40f
+/**
+ * Rotary input: a Galaxy Watch bezel reports each click as one ±136 px event, which a fixed
+ * pixels-per-step turned into several steps. Events at least [ROTARY_DETENT_PIXELS] are taken as
+ * one click = one step; smaller ones (smooth crowns) add up to a step every [ROTARY_SMOOTH_PIXELS_PER_STEP].
+ */
+private const val ROTARY_DETENT_PIXELS = 20f
+private const val ROTARY_SMOOTH_PIXELS_PER_STEP = 60f
 
 // ---------------------------------------------------------------------------------------------
 // Climate
@@ -291,16 +305,22 @@ private enum class TemperatureScale(val min: Double, val max: Double, val step: 
 // Charging
 // ---------------------------------------------------------------------------------------------
 
-/** Charging drill-down: charge limit, start/stop (only with a cable connected) and charge port. */
+/**
+ * Charging drill-down on one screen: battery as the hero (with a ring around the screen edge and
+ * the charge limit marked on it), the charge settings pill, and one action that depends on the
+ * cable: the charge port when unplugged, Start/Stop Charging when plugged in.
+ */
 @Composable
 internal fun ChargingPage(
     uiState: GravityWatchUiState,
     vehicle: GravityVehicleSnapshot,
     onSetChargeLimit: (Int) -> Unit,
+    onSetChargeCurrentLimit: (Int) -> Unit,
     onToggleCharging: () -> Unit,
     onToggleChargePort: () -> Unit
 ) {
     var editingLimit by rememberSaveable { mutableStateOf(false) }
+    var editingRate by rememberSaveable { mutableStateOf(false) }
     var confirmStop by rememberSaveable { mutableStateOf(false) }
     val controlsEnabled = uiState.controlsLockedReason == null
     if (!controlsEnabled && confirmStop) confirmStop = false
@@ -329,62 +349,98 @@ internal fun ChargingPage(
         return
     }
 
+    // The charge rate as set (the session limit); the other field is the most available.
+    val currentLimitAmps = vehicle.sessionAcCurrentLimitAmps
+    val maxRateAmps = GravityWatchViewModel.maxChargeCurrentAmps(vehicle)
+    if (editingRate) {
+        ValueEditor(
+            title = "CHARGE RATE",
+            initialValue = currentLimitAmps
+                .takeIf { it > 0 }
+                ?.coerceIn(GravityWatchViewModel.MIN_CHARGE_CURRENT_AMPS, maxRateAmps)
+                ?.toDouble()
+                ?: maxRateAmps.toDouble(),
+            minValue = GravityWatchViewModel.MIN_CHARGE_CURRENT_AMPS.toDouble(),
+            maxValue = maxRateAmps.toDouble(),
+            step = 5.0,
+            fineStep = 1.0,
+            format = { "${it.roundToInt()} A" },
+            confirmEnabled = controlsEnabled,
+            statusText = uiState.controlsLockedReason,
+            testTagPrefix = "charge_rate",
+            onCancel = { editingRate = false },
+            onConfirm = { value ->
+                editingRate = false
+                onSetChargeCurrentLimit(value.roundToInt())
+            }
+        )
+        return
+    }
+
     val chargeState = vehicle.chargeState
     val isCharging = chargeState.isActivelyCharging
     val pluggedIn = chargeState.isCablePluggedIn
 
+    val batteryPercent = vehicle.batteryPercent.roundToInt().coerceIn(0, 100)
+
     Box(modifier = Modifier.fillMaxSize()) {
-        DrilldownList(title = "CHARGING", uiState = uiState, testTag = "charging_page") {
-            item {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = "${vehicle.batteryPercent.roundToInt().coerceIn(0, 100)}%",
-                        color = Color.White,
-                        fontSize = 30.sp,
-                        lineHeight = 30.sp,
-                        fontWeight = FontWeight.ExtraBold
+        BatteryRing(
+            percent = batteryPercent,
+            limitPercent = vehicle.chargeLimitPercent,
+            charging = isCharging
+        )
+        BoxWithConstraints(modifier = Modifier.fillMaxSize().testTag("charging_page")) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .heightIn(min = maxHeight)
+                    .padding(horizontal = 24.dp, vertical = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp, Alignment.CenterVertically)
+            ) {
+                PageStatusLine(uiState)
+                Text(
+                    text = "$batteryPercent%",
+                    color = Color.White,
+                    fontSize = 34.sp,
+                    lineHeight = 34.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    modifier = Modifier.testTag("charging_battery")
+                )
+                Text(
+                    text = chargingSummary(vehicle),
+                    color = if (isCharging) AuroraGreen else LucidSilver,
+                    fontSize = 11.sp,
+                    lineHeight = 12.sp,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.testTag("charging_summary")
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                ChargeSettingsPill(
+                    limitPercent = vehicle.chargeLimitPercent,
+                    currentLimitAmps = currentLimitAmps,
+                    charging = isCharging,
+                    enabled = controlsEnabled,
+                    onEditLimit = { editingLimit = true },
+                    onEditRate = { editingRate = true }
+                )
+                // The port can't close on a connected cable, and its state says nothing new while
+                // plugged in, so the cable decides which action is offered here.
+                if (pluggedIn) {
+                    ChargingSessionPill(
+                        charging = isCharging,
+                        starting = chargeState.isStartingCharge,
+                        enabled = controlsEnabled,
+                        onClick = { if (isCharging) confirmStop = true else onToggleCharging() }
                     )
-                    Text(
-                        text = chargingSummary(vehicle),
-                        color = if (isCharging) AuroraGreen else LucidSilver,
-                        fontSize = 10.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.testTag("charging_summary")
+                } else {
+                    ChargePortPill(
+                        open = vehicle.chargePortState.isOpen,
+                        enabled = controlsEnabled,
+                        onClick = onToggleChargePort
                     )
                 }
-            }
-            item {
-                ValueRow(
-                    label = "Charge limit",
-                    value = "${vehicle.chargeLimitPercent}%",
-                    enabled = controlsEnabled,
-                    onClick = { editingLimit = true },
-                    testTag = "charging_limit_row"
-                )
-            }
-            item {
-                ToggleRow(
-                    label = when {
-                        isCharging -> "Stop Charging"
-                        pluggedIn -> "Start Charging"
-                        else -> "Not Plugged In"
-                    },
-                    isOn = isCharging,
-                    enabled = controlsEnabled && pluggedIn,
-                    onClick = { if (isCharging) confirmStop = true else onToggleCharging() },
-                    testTag = "charging_start_stop"
-                )
-            }
-            item {
-                ToggleRow(
-                    label = "Charge Port",
-                    detail = if (vehicle.chargePortState.isOpen) "Open · tap to close" else "Closed · tap to open",
-                    isOn = vehicle.chargePortState.isOpen,
-                    onColor = StatusYellow,
-                    enabled = controlsEnabled,
-                    onClick = onToggleChargePort,
-                    testTag = "charging_port_toggle"
-                )
             }
         }
         if (confirmStop) {
@@ -397,6 +453,229 @@ internal fun ChargingPage(
                 }
             )
         }
+    }
+}
+
+/**
+ * Battery level as a ring around the edge of the round screen, starting at the top: green while
+ * charging. A gold tick marks the charge limit.
+ */
+@Composable
+private fun BatteryRing(percent: Int, limitPercent: Int, charging: Boolean) {
+    Canvas(modifier = Modifier.fillMaxSize().testTag("charging_battery_ring")) {
+        val stroke = 4.dp.toPx()
+        val inset = 3.dp.toPx() + stroke / 2f
+        val arcSize = Size(size.minDimension - inset * 2, size.minDimension - inset * 2)
+        val topLeft = Offset((size.width - arcSize.width) / 2f, (size.height - arcSize.height) / 2f)
+        drawArc(
+            color = StealthBorder,
+            startAngle = 0f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = stroke)
+        )
+        drawArc(
+            color = if (charging) AuroraGreen else LucidSilver,
+            startAngle = -90f,
+            sweepAngle = 360f * percent / 100f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = stroke, cap = StrokeCap.Round)
+        )
+        // Charge limit tick, across the ring
+        val angle = Math.toRadians(-90.0 + 360.0 * limitPercent.coerceIn(0, 100) / 100.0)
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val radius = arcSize.width / 2f
+        val dx = kotlin.math.cos(angle).toFloat()
+        val dy = kotlin.math.sin(angle).toFloat()
+        val half = stroke * 1.6f
+        drawLine(
+            color = EurekaGold,
+            start = Offset(center.x + dx * (radius - half), center.y + dy * (radius - half)),
+            end = Offset(center.x + dx * (radius + half), center.y + dy * (radius + half)),
+            strokeWidth = 2.5.dp.toPx(),
+            cap = StrokeCap.Round
+        )
+    }
+}
+
+/**
+ * Charge settings in one pill: the charge limit and the charge rate (AC current limit), each
+ * opening its editor; outlined green while charging.
+ */
+@Composable
+private fun ChargeSettingsPill(
+    limitPercent: Int,
+    currentLimitAmps: Int,
+    charging: Boolean,
+    enabled: Boolean,
+    onEditLimit: () -> Unit,
+    onEditRate: () -> Unit
+) = key(enabled, charging) {
+    val shape = RoundedCornerShape(24.dp)
+    Row(
+        modifier = Modifier
+            .width(176.dp)
+            .height(46.dp)
+            .clip(shape)
+            .background(StealthCard.dimmedUnless(enabled))
+            .border(
+                if (charging) 1.5.dp else 1.dp,
+                (if (charging) AuroraGreen else StealthBorder).dimmedUnless(enabled),
+                shape
+            ),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        PillValue(
+            label = "LIMIT",
+            value = "$limitPercent%",
+            enabled = enabled,
+            onClick = onEditLimit,
+            testTag = "charging_limit_row",
+            modifier = Modifier.weight(1f)
+        )
+        Box(
+            modifier = Modifier
+                .width(1.dp)
+                .fillMaxHeight(0.6f)
+                .background(StealthBorder.dimmedUnless(enabled))
+        )
+        PillValue(
+            label = "RATE",
+            value = if (currentLimitAmps > 0) "$currentLimitAmps A" else "--",
+            enabled = enabled,
+            onClick = onEditRate,
+            testTag = "charging_rate_row",
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+/** Small label over a value, tappable; one section of a settings pill. */
+@Composable
+private fun PillValue(
+    label: String,
+    value: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    testTag: String,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .fillMaxHeight()
+            .clickable(enabled = enabled, onClick = onClick)
+            .testTag(testTag),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = label,
+            color = LucidSilver.dimmedUnless(enabled),
+            fontSize = 8.sp,
+            lineHeight = 8.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 1.sp,
+            maxLines = 1
+        )
+        Text(
+            text = value,
+            color = Color.White.dimmedUnless(enabled),
+            fontSize = 17.sp,
+            lineHeight = 18.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
+    }
+}
+
+/**
+ * Start or stop charging, spelled out; only shown with a cable connected. Stopping asks first.
+ * While the car works towards charging ([starting]: Connecting ... Preparing) it reads "Starting…"
+ * and can't be tapped, so a start isn't sent twice.
+ */
+@Composable
+private fun ChargingSessionPill(charging: Boolean, starting: Boolean, enabled: Boolean, onClick: () -> Unit) =
+    key(enabled, charging, starting) {
+        val shape = RoundedCornerShape(18.dp)
+        val accent = if (charging) CrimsonAlert else AuroraGreen
+        val label = when {
+            charging -> "Stop Charging"
+            starting -> "Starting…"
+            else -> "Start Charging"
+        }
+        val tappable = enabled && !starting
+        Row(
+            modifier = Modifier
+                .height(34.dp)
+                .clip(shape)
+                .border(1.dp, accent.dimmedUnless(enabled), shape)
+                .clickable(enabled = tappable, onClick = onClick)
+                .padding(horizontal = 14.dp)
+                .semantics { contentDescription = label }
+                .testTag("charging_start_stop"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (charging) {
+                // Stop: a small filled square
+                Box(
+                    modifier = Modifier
+                        .size(11.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(accent.dimmedUnless(enabled))
+                )
+            } else {
+                Icon(
+                    painter = painterResource(id = R.drawable.charging_bolt_24px),
+                    contentDescription = null,
+                    tint = accent.dimmedUnless(enabled),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Text(
+                text = label,
+                color = accent.dimmedUnless(enabled),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+        }
+    }
+
+/** Charge port (only offered unplugged), styled apart like the windows pill: amber "Port Open" while open. */
+@Composable
+private fun ChargePortPill(open: Boolean, enabled: Boolean, onClick: () -> Unit) = key(enabled, open) {
+    val shape = RoundedCornerShape(18.dp)
+    val color = (if (open) StatusYellow else LucidPlatinum).dimmedUnless(enabled)
+    Row(
+        modifier = Modifier
+            .height(32.dp)
+            .clip(shape)
+            .border(1.dp, (if (open) StatusYellow else StealthBorder).dimmedUnless(enabled), shape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 14.dp)
+            .semantics { contentDescription = if (open) "Charge port open" else "Charge port closed" }
+            .testTag("charging_port_toggle"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(
+            painter = painterResource(id = R.drawable.charging_port_24px),
+            contentDescription = null,
+            tint = color,
+            modifier = Modifier.size(18.dp)
+        )
+        Text(
+            text = if (open) "Port Open" else "Port",
+            color = color,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
     }
 }
 
@@ -831,9 +1110,10 @@ private fun ToggleRow(
 }
 
 /**
- * Full-screen value picker: the crown/bezel or the -/+ buttons change the value, ✓ sends it and
- * ✕ (or back / swipe) discards it. Nothing is sent to the car until ✓, so turning the crown
- * doesn't fire a command per step.
+ * Full-screen value picker: dragging around the arc at the screen edge or the crown/bezel change
+ * the value in [fineStep]s, the -/+ buttons in [step]s; ✓ sends it and ✕ (or back / swipe)
+ * discards it. Nothing is sent
+ * to the car until ✓, so moving the value doesn't fire a command per step.
  */
 @Composable
 private fun ValueEditor(
@@ -844,6 +1124,8 @@ private fun ValueEditor(
     step: Double,
     format: (Double) -> String,
     confirmEnabled: Boolean,
+    /** Step for the arc and the crown/bezel; [step] is for the -/+ buttons. */
+    fineStep: Double = step,
     statusText: String?,
     testTagPrefix: String,
     onCancel: () -> Unit,
@@ -854,35 +1136,67 @@ private fun ValueEditor(
     val haptics = LocalHapticFeedback.current
     val focusRequester = remember { FocusRequester() }
 
-    fun nudge(steps: Int) {
-        val next = (value + steps * step).coerceIn(minValue, maxValue)
-        if (next != value) {
-            value = next
+    fun setValue(next: Double) {
+        val clamped = next.coerceIn(minValue, maxValue)
+        if (clamped != value) {
+            value = clamped
             haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         }
+    }
+
+    /** One crown/bezel click. */
+    fun nudge(steps: Int) = setValue(value + steps * fineStep)
+
+    /** One -/+ press: to the next multiple of [step] in that direction (23 -> 25 or 20 for 5). */
+    fun press(up: Boolean) {
+        val k = (value - minValue) / step
+        val target = if (up) {
+            kotlin.math.floor(k + 1e-9) + 1
+        } else {
+            kotlin.math.ceil(k - 1e-9) - 1
+        }
+        setValue(minValue + target * step)
     }
 
     BackHandler(onBack = onCancel)
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .onRotaryScrollEvent { event ->
-                rotaryAccumulator += event.verticalScrollPixels
-                val steps = (rotaryAccumulator / ROTARY_PIXELS_PER_STEP).toInt()
-                if (steps != 0) {
-                    rotaryAccumulator -= steps * ROTARY_PIXELS_PER_STEP
-                    nudge(steps)
+                val pixels = event.verticalScrollPixels
+                if (abs(pixels) >= ROTARY_DETENT_PIXELS) {
+                    rotaryAccumulator = 0f
+                    nudge(if (pixels > 0) 1 else -1)
+                } else {
+                    rotaryAccumulator += pixels
+                    val steps = (rotaryAccumulator / ROTARY_SMOOTH_PIXELS_PER_STEP).toInt()
+                    if (steps != 0) {
+                        rotaryAccumulator -= steps * ROTARY_SMOOTH_PIXELS_PER_STEP
+                        nudge(steps)
+                    }
                 }
                 true
             }
             .focusRequester(focusRequester)
             .focusable()
-            .testTag("${testTagPrefix}_editor"),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+            .testTag("${testTagPrefix}_editor")
     ) {
+        // Behind the buttons, so taps on them still reach them.
+        ValueArc(
+            fraction = ((value - minValue) / (maxValue - minValue)).toFloat(),
+            onFraction = { fraction ->
+                val steps = ((fraction * (maxValue - minValue)) / fineStep).roundToInt()
+                setValue(minValue + steps * fineStep)
+            },
+            testTag = "${testTagPrefix}_arc"
+        )
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
         PageTitle(title)
         if (statusText != null) {
             Text(text = statusText, color = StatusYellow, fontSize = 10.sp, maxLines = 1)
@@ -893,7 +1207,7 @@ private fun ValueEditor(
                 icon = Icons.Default.Remove,
                 contentDesc = "Decrease",
                 enabled = value > minValue,
-                onClick = { nudge(-1) },
+                onClick = { press(up = false) },
                 testTag = "${testTagPrefix}_decrease"
             )
             Text(
@@ -910,7 +1224,7 @@ private fun ValueEditor(
                 icon = Icons.Default.Add,
                 contentDesc = "Increase",
                 enabled = value < maxValue,
-                onClick = { nudge(1) },
+                onClick = { press(up = true) },
                 testTag = "${testTagPrefix}_increase"
             )
         }
@@ -932,6 +1246,100 @@ private fun ValueEditor(
                 testTag = "${testTagPrefix}_confirm"
             )
         }
+        }
+    }
+}
+
+/** The value arc covers 270°, from bottom-left clockwise over the top to bottom-right. */
+private const val ARC_START_DEGREES = 135f
+private const val ARC_SWEEP_DEGREES = 270f
+
+/** Distance from the screen edge to the middle of the arc's track. */
+internal val VALUE_ARC_INSET = 9.dp
+
+/**
+ * A slider around the edge of the round screen: [fraction] of the arc is filled, with a knob at
+ * the end. Touching or dragging near the arc reports the fraction under the finger; touches
+ * further in are left for the controls above it.
+ */
+@Composable
+private fun ValueArc(fraction: Float, onFraction: (Float) -> Unit, testTag: String) {
+    val current by rememberUpdatedState(onFraction)
+    Canvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag(testTag)
+            .pointerInput(Unit) {
+                val inset = VALUE_ARC_INSET.toPx()
+                val reach = 30.dp.toPx()
+                fun fractionAt(position: Offset): Float? {
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    val radius = minOf(size.width, size.height) / 2f - inset
+                    val d = position - center
+                    if (d.getDistance() < radius - reach) return null
+                    var angle = Math.toDegrees(kotlin.math.atan2(d.y, d.x).toDouble()).toFloat()
+                    if (angle < 0f) angle += 360f
+                    var relative = (angle - ARC_START_DEGREES + 360f) % 360f
+                    // In the gap at the bottom: snap to the nearer end
+                    if (relative > ARC_SWEEP_DEGREES) {
+                        relative = if (relative > ARC_SWEEP_DEGREES + (360f - ARC_SWEEP_DEGREES) / 2f) 0f else ARC_SWEEP_DEGREES
+                    }
+                    return relative / ARC_SWEEP_DEGREES
+                }
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = true)
+                    val start = fractionAt(down.position) ?: return@awaitEachGesture
+                    down.consume()
+                    current(start)
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!change.pressed) break
+                        // Once dragging, follow the finger even if it drifts inwards
+                        val center = Offset(size.width / 2f, size.height / 2f)
+                        val d = change.position - center
+                        if (d.getDistance() > 1f) {
+                            val radius = minOf(size.width, size.height) / 2f - inset
+                            val onRing = center + d * (radius / d.getDistance())
+                            fractionAt(onRing)?.let(current)
+                        }
+                        change.consume()
+                    }
+                }
+            }
+    ) {
+        val stroke = 6.dp.toPx()
+        val inset = VALUE_ARC_INSET.toPx()
+        val diameter = size.minDimension - inset * 2
+        val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
+        val arcSize = Size(diameter, diameter)
+        drawArc(
+            color = StealthBorder,
+            startAngle = ARC_START_DEGREES,
+            sweepAngle = ARC_SWEEP_DEGREES,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = stroke, cap = StrokeCap.Round)
+        )
+        val f = fraction.coerceIn(0f, 1f)
+        drawArc(
+            color = EurekaGold,
+            startAngle = ARC_START_DEGREES,
+            sweepAngle = ARC_SWEEP_DEGREES * f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = stroke, cap = StrokeCap.Round)
+        )
+        val angle = Math.toRadians((ARC_START_DEGREES + ARC_SWEEP_DEGREES * f).toDouble())
+        val radius = diameter / 2f
+        val knob = Offset(
+            size.width / 2f + radius * kotlin.math.cos(angle).toFloat(),
+            size.height / 2f + radius * kotlin.math.sin(angle).toFloat()
+        )
+        drawCircle(color = ObsidianBlack, radius = 10.dp.toPx(), center = knob)
+        drawCircle(color = EurekaGold, radius = 8.dp.toPx(), center = knob)
     }
 }
 
