@@ -104,6 +104,14 @@ private val StatusYellow = Color(0xFFFFEA00)
 private const val ROTARY_DETENT_PIXELS = 20f
 private const val ROTARY_SMOOTH_PIXELS_PER_STEP = 60f
 
+/**
+ * A Galaxy Watch bezel has 24 clicks per turn. While it's spun (clicks closer together than
+ * [ROTARY_SPIN_CLICK_MS]) each click moves the value as far as the bezel turned, so the knob keeps
+ * up with it on long ranges (charge limit, rate); separate clicks still move one step.
+ */
+private const val BEZEL_DEGREES_PER_CLICK = 15f
+private const val ROTARY_SPIN_CLICK_MS = 200L
+
 // ---------------------------------------------------------------------------------------------
 // Climate
 // ---------------------------------------------------------------------------------------------
@@ -1133,6 +1141,12 @@ private fun ValueEditor(
 ) {
     var value by rememberSaveable { mutableStateOf(initialValue.coerceIn(minValue, maxValue)) }
     var rotaryAccumulator by remember { mutableFloatStateOf(0f) }
+    var lastClickMillis by remember { mutableStateOf(0L) }
+    // Steps for one bezel click's worth of arc (at least 1): temperature 1, limit 3, rate 4
+    val spinStepsPerClick = remember(minValue, maxValue, fineStep) {
+        ((maxValue - minValue) / fineStep * BEZEL_DEGREES_PER_CLICK / ARC_SWEEP_DEGREES)
+            .roundToInt().coerceAtLeast(1)
+    }
     val haptics = LocalHapticFeedback.current
     val focusRequester = remember { FocusRequester() }
 
@@ -1168,7 +1182,10 @@ private fun ValueEditor(
                 val pixels = event.verticalScrollPixels
                 if (abs(pixels) >= ROTARY_DETENT_PIXELS) {
                     rotaryAccumulator = 0f
-                    nudge(if (pixels > 0) 1 else -1)
+                    val spinning = event.uptimeMillis - lastClickMillis < ROTARY_SPIN_CLICK_MS
+                    lastClickMillis = event.uptimeMillis
+                    val steps = if (spinning) spinStepsPerClick else 1
+                    nudge(if (pixels > 0) steps else -steps)
                 } else {
                     rotaryAccumulator += pixels
                     val steps = (rotaryAccumulator / ROTARY_SMOOTH_PIXELS_PER_STEP).toInt()
