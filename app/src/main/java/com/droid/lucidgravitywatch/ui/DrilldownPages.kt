@@ -443,10 +443,11 @@ internal fun ChargingPage(
                         onClick = { if (isCharging) confirmStop = true else onToggleCharging() }
                     )
                 } else {
+                    // Gravity's port door is manual: show its state without offering a command.
                     ChargePortPill(
                         open = vehicle.chargePortState.isOpen,
                         enabled = controlsEnabled,
-                        onClick = onToggleChargePort
+                        onClick = onToggleChargePort.takeIf { vehicle.hasPoweredChargePortDoor }
                     )
                 }
             }
@@ -654,20 +655,26 @@ private fun ChargingSessionPill(charging: Boolean, starting: Boolean, enabled: B
         }
     }
 
-/** Charge port (only offered unplugged), styled apart like the windows pill: amber "Port Open" while open. */
+/**
+ * Charge port (only offered unplugged), styled apart like the windows pill: amber "Port Open" while
+ * open. With no [onClick] (a car with a manual port door) it is a read-only status: "Port Closed"
+ * or "Port Open", never dimmed by locked controls, since there is nothing to press.
+ */
 @Composable
-private fun ChargePortPill(open: Boolean, enabled: Boolean, onClick: () -> Unit) = key(enabled, open) {
+private fun ChargePortPill(open: Boolean, enabled: Boolean, onClick: (() -> Unit)?) = key(enabled, open) {
+    val readOnly = onClick == null
+    val shown = enabled || readOnly
     val shape = RoundedCornerShape(18.dp)
-    val color = (if (open) StatusYellow else LucidPlatinum).dimmedUnless(enabled)
+    val color = (if (open) StatusYellow else LucidPlatinum).dimmedUnless(shown)
     Row(
         modifier = Modifier
             .height(32.dp)
             .clip(shape)
-            .border(1.dp, (if (open) StatusYellow else StealthBorder).dimmedUnless(enabled), shape)
-            .clickable(enabled = enabled, onClick = onClick)
+            .border(1.dp, (if (open) StatusYellow else StealthBorder).dimmedUnless(shown), shape)
+            .then(if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier)
             .padding(horizontal = 14.dp)
             .semantics { contentDescription = if (open) "Charge port open" else "Charge port closed" }
-            .testTag("charging_port_toggle"),
+            .testTag(if (readOnly) "charging_port_status" else "charging_port_toggle"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
@@ -678,7 +685,11 @@ private fun ChargePortPill(open: Boolean, enabled: Boolean, onClick: () -> Unit)
             modifier = Modifier.size(18.dp)
         )
         Text(
-            text = if (open) "Port Open" else "Port",
+            text = when {
+                open -> "Port Open"
+                readOnly -> "Port Closed"
+                else -> "Port"
+            },
             color = color,
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,

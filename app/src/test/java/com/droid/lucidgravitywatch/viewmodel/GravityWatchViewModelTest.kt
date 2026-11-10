@@ -435,8 +435,17 @@ class GravityWatchViewModelTest {
         advanceUntilIdle()
         assertEquals(DoorState.CLOSED, viewModel.uiState.value.activeVehicle?.rearTrunkState)
 
-        // Toggle Charge Port -> OPEN and back -> CLOSED (unplugged; the port can't move on a cable)
+        // A Gravity's charge port door is manual: no command is sent, so nothing waits on the car
         repo.snapshot = repo.snapshot.copy(chargeState = ChargeState.NOT_CONNECTED)
+        viewModel.refreshVehicles()
+        advanceUntilIdle()
+        viewModel.toggleChargePort()
+        advanceUntilIdle()
+        assertEquals(DoorState.CLOSED, viewModel.uiState.value.activeVehicle?.chargePortState)
+        assertNull(viewModel.uiState.value.controlsLockedReason)
+
+        // Toggle Charge Port on an Air -> OPEN and back -> CLOSED (unplugged; the port can't move on a cable)
+        repo.snapshot = repo.snapshot.copy(model = VehicleModel.AIR)
         viewModel.refreshVehicles()
         advanceUntilIdle()
         viewModel.toggleChargePort()
@@ -453,6 +462,9 @@ class GravityWatchViewModelTest {
         viewModel.toggleChargePort()
         advanceUntilIdle()
         assertEquals(DoorState.CLOSED, viewModel.uiState.value.activeVehicle?.chargePortState)
+        repo.snapshot = repo.snapshot.copy(model = VehicleModel.GRAVITY)
+        viewModel.refreshVehicles()
+        advanceUntilIdle()
 
         // Toggle Climate Precondition -> PRECONDITION and back -> OFF
         viewModel.toggleClimatePrecondition()

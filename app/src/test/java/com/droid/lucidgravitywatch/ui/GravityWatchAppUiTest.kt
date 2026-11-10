@@ -8,6 +8,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -585,7 +586,10 @@ class GravityWatchAppUiTest {
 
     @Test
     fun chargingPage_startStopNeedsCable_stopAsksFirst_andLimitSetsOnConfirm() {
-        val vehicle = mutableStateOf(sampleGravity.copy(chargeState = ChargeState.NOT_CONNECTED, chargeRateKw = 0.0))
+        // An Air: its charge port door is powered, so the port pill is a control
+        val vehicle = mutableStateOf(
+            sampleGravity.copy(model = VehicleModel.AIR, chargeState = ChargeState.NOT_CONNECTED, chargeRateKw = 0.0)
+        )
         var chargingToggled = 0
         var portToggled = 0
         val limits = mutableListOf<Int>()
@@ -655,6 +659,34 @@ class GravityWatchAppUiTest {
         composeTestRule.onNodeWithTag("charge_rate_decrease").performClick()
         composeTestRule.onNodeWithTag("charge_rate_confirm").performClick()
         assertEquals(listOf(75, 45, 20), rates)
+    }
+
+    @Test
+    fun chargingPage_gravityShowsPortStateWithoutOfferingACommand() {
+        // The Gravity's charge port door is manual: the pill only reports its state
+        val vehicle = mutableStateOf(sampleGravity.copy(chargeState = ChargeState.NOT_CONNECTED, chargeRateKw = 0.0))
+        var portToggled = 0
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(WatchPage.CHARGING, vehicle.value),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onToggleChargePort = { portToggled++ }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("charging_port_toggle").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("charging_port_status").assertHasNoClickAction()
+        composeTestRule.onNodeWithText("Port Closed").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("charging_port_status").performClick()
+        assertEquals(0, portToggled)
+
+        vehicle.value = vehicle.value.copy(chargePortState = DoorState.OPEN)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Port Open").assertIsDisplayed()
     }
 
     @Test

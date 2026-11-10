@@ -417,6 +417,14 @@ data class GravityVehicleSnapshot(
             rearHeat = rearSeatHeatMode
         )
 
+    /**
+     * Whether the car opens and closes its charge port door itself. The Air does; the Gravity's
+     * door is manual, so a command would never be confirmed and the watch only shows its state.
+     * Unknown models are treated as manual so a press can't leave the controls waiting.
+     */
+    val hasPoweredChargePortDoor: Boolean
+        get() = model == VehicleModel.AIR
+
     /** Show seat cooling when the config says the car has it, or a seat reports cooling on. */
     val showsSeatCooling: Boolean
         get() = hasVentilatedFrontSeats || driverSeatVentMode.isOn || passengerSeatVentMode.isOn

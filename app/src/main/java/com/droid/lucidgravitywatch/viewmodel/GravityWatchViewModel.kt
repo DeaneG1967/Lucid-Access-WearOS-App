@@ -953,6 +953,11 @@ class GravityWatchViewModel(
 
     fun toggleChargePort() {
         val current = controllableVehicle("toggle charge port") ?: return
+        if (!current.hasPoweredChargePortDoor) {
+            // The Gravity's port door is manual: the car would never confirm a command.
+            Log.i(TAG, "Ignoring \"toggle charge port\": ${current.model.displayName} has no powered port door")
+            return
+        }
         if (current.chargeState.isCablePluggedIn) {
             // The car won't move the port door with a cable connected.
             Log.i(TAG, "Ignoring \"toggle charge port\": charge cable connected")
