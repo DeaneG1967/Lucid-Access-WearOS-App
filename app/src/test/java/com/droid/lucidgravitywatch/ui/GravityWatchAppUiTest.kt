@@ -7,6 +7,8 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.assertHasNoClickAction
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -14,22 +16,29 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.swipeRight
+import androidx.compose.ui.test.swipeUp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.droid.lucidgravitywatch.model.BatteryPreconStatus
 import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.DefrostState
 import com.droid.lucidgravitywatch.model.DoorState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
+import com.droid.lucidgravitywatch.model.ClimateSeat
 import com.droid.lucidgravitywatch.model.HvacPower
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.PowerState
+import com.droid.lucidgravitywatch.model.SeatClimateKind
 import com.droid.lucidgravitywatch.model.SeatClimateMode
 import com.droid.lucidgravitywatch.model.SteeringWheelHeaterLevel
 import com.droid.lucidgravitywatch.model.VehicleModel
 import com.droid.lucidgravitywatch.model.WalkawayState
 import com.droid.lucidgravitywatch.theme.LucidGravityWatchTheme
 import com.droid.lucidgravitywatch.viewmodel.GravityWatchUiState
+import com.droid.lucidgravitywatch.viewmodel.WatchPage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -146,13 +155,12 @@ class GravityWatchAppUiTest {
     }
 
     @Test
-    fun simplifiedDashboard_showsChargeLevelAtTopAndFiveIconButtonsBelow() {
+    fun simplifiedDashboard_showsChargeLevelClosuresAndDrilldownButtons() {
         var frunkClicked = false
         var lockClicked = false
         var trunkClicked = false
         var stopChargingClicked = false
-        var hornClicked = false
-        var lightsClicked = false
+        val openedPages = mutableListOf<WatchPage>()
         val currentVehicle = mutableStateOf(sampleGravity)
 
         composeTestRule.setContent {
@@ -173,8 +181,7 @@ class GravityWatchAppUiTest {
                     },
                     onToggleRearTrunk = { trunkClicked = true },
                     onStopCharging = { stopChargingClicked = true },
-                    onHonkHorn = { hornClicked = true },
-                    onFlashLights = { lightsClicked = true }
+                    onOpenPage = { openedPages += it }
                 )
             }
         }
@@ -260,7 +267,7 @@ class GravityWatchAppUiTest {
         composeTestRule.onNodeWithText("Close Frunk?").assertIsDisplayed()
         composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
 
-        // 2. Door Lock/Unlock button requires confirmation ("Unlock Doors?" when locked, "Lock Doors?" when unlocked)
+        // 2. Unlocking asks first ("Unlock Doors?"); locking is a single tap
         composeTestRule.onNodeWithTag("primary_lock_toggle_button").performClick()
         org.junit.Assert.assertFalse(lockClicked)
         composeTestRule.onNodeWithText("Unlock Doors?").assertIsDisplayed()
@@ -268,10 +275,10 @@ class GravityWatchAppUiTest {
         assertTrue(lockClicked)
         composeTestRule.onNodeWithContentDescription("Doors Unlocked - Tap to Lock").assertIsDisplayed()
 
-        // Now unlocked -> pressing Lock button shows "Lock Doors?"
+        lockClicked = false
         composeTestRule.onNodeWithTag("primary_lock_toggle_button").performClick()
-        composeTestRule.onNodeWithText("Lock Doors?").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
+        assertTrue(lockClicked)
+        composeTestRule.onNodeWithTag("confirmation_popup_overlay").assertDoesNotExist()
 
         // 3. Trunk button requires confirmation ("Open Trunk?" when closed, "Close Trunk?" when open)
         composeTestRule.onNodeWithTag("overview_trunk_button").performClick()
@@ -286,12 +293,13 @@ class GravityWatchAppUiTest {
         composeTestRule.onNodeWithText("Close Trunk?").assertIsDisplayed()
         composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
 
-        // 4. Horn and Lights trigger immediately without confirmation pop-up
-        composeTestRule.onNodeWithTag("overview_horn_button").performClick()
-        assertTrue(hornClicked)
-
-        composeTestRule.onNodeWithTag("overview_lights_button").performClick()
-        assertTrue(lightsClicked)
+        // 4. Horn and lights moved off the home screen; the bottom row opens the drill-down pages
+        composeTestRule.onNodeWithTag("overview_horn_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("overview_lights_button").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("nav_climate_button").performClick()
+        composeTestRule.onNodeWithTag("nav_charging_button").performClick()
+        composeTestRule.onNodeWithTag("nav_flonk_button").performClick()
+        assertEquals(listOf(WatchPage.CLIMATE, WatchPage.CHARGING, WatchPage.FLONK), openedPages)
     }
 
     @Test
@@ -307,11 +315,14 @@ class GravityWatchAppUiTest {
                 selectedVehicleId = sampleGravity.vehicleId
             )
         )
+        val showFlonk = mutableStateOf(false)
 
         composeTestRule.setContent {
             LucidGravityWatchTheme {
                 GravityWatchScreen(
-                    uiState = uiState.value,
+                    uiState = uiState.value.copy(
+                        currentPage = if (showFlonk.value) WatchPage.FLONK else WatchPage.HOME
+                    ),
                     onSelectRegion = {},
                     onLogin = { _, _, _ -> },
                     onToggleFrunk = { frunkClicked = true },
@@ -323,8 +334,13 @@ class GravityWatchAppUiTest {
         composeTestRule.onNodeWithText("Waking car…").assertIsDisplayed()
         composeTestRule.onNodeWithTag("overview_frunk_button").performClick()
         composeTestRule.onNodeWithTag("confirmation_popup_overlay").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("overview_horn_button").performClick()
+        // Drill-down pages freeze their controls the same way
+        showFlonk.value = true
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("page_status_text").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("flonk_horn_button").performClick()
         org.junit.Assert.assertFalse(hornClicked)
+        showFlonk.value = false
 
         // Car awake and status known -> controls work and the status line is replaced
         uiState.value = uiState.value.copy(
@@ -412,6 +428,347 @@ class GravityWatchAppUiTest {
         isPollingState.value = false
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("polling_indicator_dot").assertDoesNotExist()
+    }
+
+    private fun dashboardState(page: WatchPage, vehicle: GravityVehicleSnapshot = sampleGravity) =
+        GravityWatchUiState(
+            isAuthenticated = true,
+            hasFreshTelemetry = true,
+            vehicles = listOf(vehicle),
+            selectedVehicleId = vehicle.vehicleId,
+            currentPage = page
+        )
+
+    @Test
+    fun climatePage_showsTemperatures_togglesClimate_andSetsTargetOnlyOnConfirm() {
+        var climateToggled = 0
+        val targets = mutableListOf<Double>()
+        val pages = mutableListOf<WatchPage>()
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(WatchPage.CLIMATE),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onToggleClimatePrecondition = { climateToggled++ },
+                    onSetTargetTemperature = { targets += it },
+                    onOpenPage = { pages += it }
+                )
+            }
+        }
+
+        // 21 °C inside and target, shown in °F; climate is preconditioning
+        composeTestRule.onNodeWithTag("climate_unit_toggle").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("climate_power_toggle").performClick()
+        assertEquals(1, climateToggled)
+
+        // Target editor: +/- only change the displayed value until confirm
+        composeTestRule.onNodeWithTag("climate_target_row").performClick()
+        composeTestRule.onNodeWithTag("target_temp_editor").assertIsDisplayed()
+        composeTestRule.onNodeWithText("70°F").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("target_temp_increase").performClick()
+        composeTestRule.onNodeWithTag("target_temp_increase").performClick()
+        composeTestRule.onNodeWithText("72°F").assertIsDisplayed()
+        assertTrue(targets.isEmpty())
+        composeTestRule.onNodeWithTag("target_temp_confirm").performClick()
+        assertEquals(1, targets.size)
+        assertEquals(22.22, targets.single(), 0.01)
+        composeTestRule.onNodeWithTag("target_temp_editor").assertDoesNotExist()
+
+        // Cancel discards the edit
+        composeTestRule.onNodeWithTag("climate_target_row").performClick()
+        composeTestRule.onNodeWithTag("target_temp_decrease").performClick()
+        composeTestRule.onNodeWithTag("target_temp_cancel").performClick()
+        assertEquals(1, targets.size)
+
+        // Seat heat/cooling buttons sit further down the list and open the seat diagrams
+        composeTestRule.onNodeWithTag("climate_page").performTouchInput { swipeUp() }
+        composeTestRule.onNodeWithTag("climate_seat_heat_button").performScrollTo().performClick()
+        assertEquals(listOf(WatchPage.SEAT_HEAT), pages)
+        // sampleGravity has no ventilated seats
+        composeTestRule.onNodeWithTag("climate_seat_cooling_button").assertDoesNotExist()
+    }
+
+    @Test
+    fun climatePage_ventingWindowsAsksFirst_closingIsOneTap() {
+        val vehicle = mutableStateOf(sampleGravity)
+        val choices = mutableListOf<Boolean>()
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(WatchPage.CLIMATE, vehicle.value),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onSetAllWindows = { choices += it }
+                )
+            }
+        }
+
+        // Closed: venting asks first; cancel sends nothing
+        composeTestRule.onNodeWithTag("climate_windows_button").performClick()
+        composeTestRule.onNodeWithText("Crack Windows?").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("confirmation_cancel_button").performClick()
+        assertTrue(choices.isEmpty())
+        composeTestRule.onNodeWithTag("climate_windows_button").performClick()
+        composeTestRule.onNodeWithTag("confirmation_confirm_button").performClick()
+        assertEquals(listOf(true), choices)
+
+        // Open: one tap closes, no pop-up
+        vehicle.value = sampleGravity.copy(windowsOpen = true)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("climate_windows_button").performClick()
+        composeTestRule.onNodeWithTag("confirmation_popup_overlay").assertDoesNotExist()
+        assertEquals(listOf(true, false), choices)
+    }
+
+    @Test
+    fun seatHeatPage_tapsSeatsAndWheel_andBackGoesToClimate() {
+        val taps = mutableListOf<Pair<ClimateSeat, SeatClimateKind>>()
+        var wheelTaps = 0
+        val pages = mutableListOf<WatchPage>()
+        val vehicle = sampleGravity.copy(hasHeatedRearSeats = true, hasVentilatedFrontSeats = true)
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(WatchPage.SEAT_HEAT, vehicle),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onOpenPage = { pages += it },
+                    onTapSeat = { seat, kind -> taps += seat to kind },
+                    onTapSteeringWheel = { wheelTaps++ }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("seat_heat_page").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("seat_zone_driver").performClick()
+        composeTestRule.onNodeWithTag("seat_zone_passenger").performClick()
+        composeTestRule.onNodeWithTag("seat_zone_rear").performClick()
+        composeTestRule.onNodeWithTag("seat_zone_steering_wheel").performClick()
+        assertEquals(
+            listOf(
+                ClimateSeat.DRIVER to SeatClimateKind.HEAT,
+                ClimateSeat.PASSENGER to SeatClimateKind.HEAT,
+                ClimateSeat.REAR to SeatClimateKind.HEAT
+            ),
+            taps
+        )
+        assertEquals(1, wheelTaps)
+
+        composeTestRule.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        assertEquals(listOf(WatchPage.CLIMATE), pages)
+    }
+
+    @Test
+    fun seatCoolingPage_showsFrontSeatsOnly() {
+        val taps = mutableListOf<Pair<ClimateSeat, SeatClimateKind>>()
+        val vehicle = sampleGravity.copy(hasHeatedRearSeats = true, hasVentilatedFrontSeats = true)
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(WatchPage.SEAT_COOLING, vehicle),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onTapSeat = { seat, kind -> taps += seat to kind }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("seat_cooling_page").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("seat_zone_rear").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("seat_zone_steering_wheel").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("seat_zone_driver").performClick()
+        assertEquals(listOf(ClimateSeat.DRIVER to SeatClimateKind.COOL), taps)
+    }
+
+    @Test
+    fun chargingPage_startStopNeedsCable_stopAsksFirst_andLimitSetsOnConfirm() {
+        // An Air: its charge port door is powered, so the port pill is a control
+        val vehicle = mutableStateOf(
+            sampleGravity.copy(model = VehicleModel.AIR, chargeState = ChargeState.NOT_CONNECTED, chargeRateKw = 0.0)
+        )
+        var chargingToggled = 0
+        var portToggled = 0
+        val limits = mutableListOf<Int>()
+        val rates = mutableListOf<Int>()
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(WatchPage.CHARGING, vehicle.value),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onToggleCharging = { chargingToggled++ },
+                    onToggleChargePort = { portToggled++ },
+                    onSetChargeLimit = { limits += it },
+                    onSetChargeCurrentLimit = { rates += it }
+                )
+            }
+        }
+
+        // Unplugged: the charge port is offered, start/stop is not
+        composeTestRule.onNodeWithTag("charging_start_stop").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("charging_port_toggle").performClick()
+        assertEquals(1, portToggled)
+
+        // Plugged in: the port is no longer offered; Start Charging fires immediately
+        vehicle.value = vehicle.value.copy(chargeState = ChargeState.CABLE_CONNECTED)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("charging_port_toggle").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Start Charging").performClick()
+        assertEquals(1, chargingToggled)
+
+        // Charging: Stop Charging asks for confirmation first
+        vehicle.value = vehicle.value.copy(chargeState = ChargeState.CHARGING, chargeRateKw = 11.0)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Stop Charging").performClick()
+        composeTestRule.onNodeWithText("Stop Charging?").assertIsDisplayed()
+        assertEquals(1, chargingToggled)
+        composeTestRule.onNodeWithTag("confirmation_confirm_button").performClick()
+        assertEquals(2, chargingToggled)
+
+        // Charge limit 85% -> 86% on confirm
+        composeTestRule.onNodeWithTag("charging_limit_row").performClick()
+        composeTestRule.onNodeWithTag("charge_limit_increase").performClick()
+        composeTestRule.onNodeWithTag("charge_limit_confirm").performClick()
+        assertEquals(listOf(86), limits)
+
+        // Charge rate: unknown (--) starts the editor at 80 A; minus once -> 75 A (5 A steps)
+        composeTestRule.onNodeWithTag("charging_rate_row").performClick()
+        composeTestRule.onNodeWithTag("charge_rate_decrease").performClick()
+        composeTestRule.onNodeWithTag("charge_rate_confirm").performClick()
+        assertEquals(listOf(75), rates)
+
+        // Touching the top of the arc picks the middle of the range: 10..80 A -> 45 A
+        composeTestRule.onNodeWithTag("charging_rate_row").performClick()
+        composeTestRule.onNodeWithTag("charge_rate_arc").performTouchInput {
+            val radius = minOf(width, height) / 2f - VALUE_ARC_INSET.toPx()
+            down(Offset(centerX, centerY - radius))
+            up()
+        }
+        composeTestRule.onNodeWithTag("charge_rate_confirm").performClick()
+        assertEquals(listOf(75, 45), rates)
+
+        // -/+ snap to multiples of 5 A from an in-between rate: 23 A, minus -> 20 A
+        vehicle.value = vehicle.value.copy(sessionAcCurrentLimitAmps = 23)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("charging_rate_row").performClick()
+        composeTestRule.onNodeWithTag("charge_rate_decrease").performClick()
+        composeTestRule.onNodeWithTag("charge_rate_confirm").performClick()
+        assertEquals(listOf(75, 45, 20), rates)
+    }
+
+    @Test
+    fun chargingPage_gravityShowsPortStateWithoutOfferingACommand() {
+        // The Gravity's charge port door is manual: the pill only reports its state
+        val vehicle = mutableStateOf(sampleGravity.copy(chargeState = ChargeState.NOT_CONNECTED, chargeRateKw = 0.0))
+        var portToggled = 0
+
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(WatchPage.CHARGING, vehicle.value),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onToggleChargePort = { portToggled++ }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("charging_port_toggle").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("charging_port_status").assertHasNoClickAction()
+        composeTestRule.onNodeWithText("Port Closed").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("charging_port_status").performClick()
+        assertEquals(0, portToggled)
+
+        vehicle.value = vehicle.value.copy(chargePortState = DoorState.OPEN)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Port Open").assertIsDisplayed()
+    }
+
+    @Test
+    fun flonkPage_flashesAndHonksWithoutConfirmation() {
+        var honked = false
+        var flashed = false
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(WatchPage.FLONK),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onHonkHorn = { honked = true },
+                    onFlashLights = { flashed = true }
+                )
+            }
+        }
+        composeTestRule.onNodeWithTag("flonk_lights_button").performClick()
+        composeTestRule.onNodeWithTag("flonk_horn_button").performClick()
+        assertTrue(flashed)
+        assertTrue(honked)
+        composeTestRule.onNodeWithTag("confirmation_popup_overlay").assertDoesNotExist()
+    }
+
+    @Test
+    fun drilldownPage_backReturnsHome() {
+        val page = mutableStateOf(WatchPage.CHARGING)
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(page.value),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onOpenPage = { page.value = it }
+                )
+            }
+        }
+        composeTestRule.onNodeWithTag("charging_page").assertIsDisplayed()
+        composeTestRule.activityRule.scenario.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        composeTestRule.waitForIdle()
+        assertEquals(WatchPage.HOME, page.value)
+        composeTestRule.onNodeWithTag("nav_charging_button").assertIsDisplayed()
+    }
+
+    @Test
+    fun drilldownPage_swipeRightReturnsHome() {
+        val page = mutableStateOf(WatchPage.CLIMATE)
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = dashboardState(page.value),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> },
+                    onOpenPage = { page.value = it }
+                )
+            }
+        }
+        composeTestRule.onRoot().performTouchInput { swipeRight() }
+        composeTestRule.waitForIdle()
+        assertEquals(WatchPage.HOME, page.value)
+    }
+
+    @Test
+    fun loginPasswordStep_swipeRightReturnsToEmailEntry() {
+        composeTestRule.setContent {
+            LucidGravityWatchTheme {
+                GravityWatchScreen(
+                    uiState = GravityWatchUiState(),
+                    onSelectRegion = {},
+                    onLogin = { _, _, _ -> }
+                )
+            }
+        }
+        enterRemoteInput("login_email_input", LOGIN_EMAIL_INPUT_KEY, "pilot@lucidmotors.com")
+        composeTestRule.onNodeWithTag("login_password_input").assertIsDisplayed()
+
+        composeTestRule.onRoot().performTouchInput { swipeRight() }
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("login_password_input").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("login_email_input").assertIsDisplayed()
+        composeTestRule.onNodeWithText("pilot@lucidmotors.com").assertIsDisplayed()
     }
 }
 

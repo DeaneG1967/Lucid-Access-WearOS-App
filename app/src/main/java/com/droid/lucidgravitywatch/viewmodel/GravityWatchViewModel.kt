@@ -6,11 +6,17 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.droid.lucidgravitywatch.model.BatteryPreconStatus
+import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.DefrostState
 import com.droid.lucidgravitywatch.model.DoorState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
+import com.droid.lucidgravitywatch.model.ClimateSeat
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
+import com.droid.lucidgravitywatch.model.SeatClimateKind
+import com.droid.lucidgravitywatch.model.SeatClimateMode
+import com.droid.lucidgravitywatch.model.SeatClimateSettings
+import com.droid.lucidgravitywatch.model.SteeringWheelHeaterLevel
 import com.droid.lucidgravitywatch.network.LucidApiException
 import com.droid.lucidgravitywatch.repository.LucidVehicleRepository
 import kotlinx.coroutines.CancellationException
@@ -29,13 +35,23 @@ import java.net.UnknownHostException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.abs
 
-enum class WatchDialPage(val title: String) {
-    OVERVIEW_LOCK("Security"),
-    CLOSURES("Closures"),
+/** The watch screens: the home dashboard and the pages it drills down into. */
+enum class WatchPage(val title: String) {
+    HOME("Home"),
     CLIMATE("Climate"),
-    BATTERY_CHARGING("Energy"),
-    VEHICLE_ACCOUNT("Vehicle")
+    CHARGING("Charging"),
+    FLONK("Flonk"),
+    SEAT_HEAT("Seat Heat"),
+    SEAT_COOLING("Seat Cooling");
+
+    /** Where back/swipe-back goes from this page. */
+    val parent: WatchPage
+        get() = when (this) {
+            SEAT_HEAT, SEAT_COOLING -> CLIMATE
+            else -> HOME
+        }
 }
 
 data class GravityWatchUiState(
@@ -49,7 +65,7 @@ data class GravityWatchUiState(
     val selectedRegion: LucidRegion = LucidRegion.US,
     val useFahrenheit: Boolean = true,
     val watchBezelFrameEnabled: Boolean = true,
-    val currentDialPage: WatchDialPage = WatchDialPage.OVERVIEW_LOCK,
+    val currentPage: WatchPage = WatchPage.HOME,
     val userEmail: String = "",
     val userDisplayName: String = "",
     val vehicles: List<GravityVehicleSnapshot> = emptyList(),
@@ -69,7 +85,14 @@ data class GravityWatchUiState(
      * True while the active car keeps sending new reports (see GravityWatchViewModel's report
      * tracking). A charging car stays online in SLEEP_CHARGE without ever reporting an awake state.
      */
-    val hasLiveReports: Boolean = false
+    val hasLiveReports: Boolean = false,
+    /**
+     * Seat levels tapped in on the seat diagram: held for [GravityWatchViewModel.SEAT_TAP_SETTLE_MS]
+     * after the last tap, then sent, and shown until the car confirms them. Null when none.
+     */
+    val seatDraft: SeatClimateSettings? = null,
+    /** Steering heater level tapped in on the seat diagram; handled like [seatDraft]. */
+    val steeringDraft: SteeringWheelHeaterLevel? = null
 ) {
     /**
      * The vehicle being controlled: the user's saved choice, or the only vehicle on the account.
@@ -107,6 +130,26 @@ data class GravityWatchUiState(
         get() = controlsLockedReason != null
 }
 
+/**
+ * Whether climate was on before Max AC or Max Defrost was turned on from the watch. Both modes turn
+ * climate on, and turning them off leaves it on (as the Lucid app does too); turning climate off
+ * also turns off the seat cooling Max AC switched on.
+ */
+private class ClimateRestorePoint(val climateWasOn: Boolean) {
+    /** The user turned climate on/off or set a temperature while the mode was on. */
+    var climateChangedByUser = false
+
+    /** Climate should go back off: it was off before and the user has not touched it since. */
+    fun turnsClimateOff(current: GravityVehicleSnapshot): Boolean =
+        !climateWasOn && !climateChangedByUser && current.hvacPower.isActive
+}
+
+/** A state change a command should produce, described for the log. */
+private class ExpectedCondition(
+    val description: String,
+    val isMet: (GravityVehicleSnapshot) -> Boolean
+)
+
 class GravityWatchViewModel(
     private val repository: LucidVehicleRepository,
     /** Monotonic watch time; only ever compared with itself, never with Lucid's report times. */
@@ -122,6 +165,8 @@ class GravityWatchViewModel(
         const val RATE_LIMITED_POLL_INTERVAL_MS = 15_000L
         /** How long polling stays at [FAST_POLL_INTERVAL_MS] after a command is sent. */
         const val FAST_POLL_WINDOW_MS = 10_000L
+        /** Longest fast polling while waiting for a started charge to begin (see [pollFastUntil]). */
+        const val CHARGE_START_FAST_POLL_MAX_MS = 120_000L
         /** How long polling stays at [RATE_LIMITED_POLL_INTERVAL_MS] after a rate-limit error. */
         const val RATE_LIMIT_BACKOFF_MS = 60_000L
         const val STATE_CONFIRMATION_TIMEOUT_MS = 45_000L
@@ -135,6 +180,26 @@ class GravityWatchViewModel(
         const val LIVE_REPORT_MAX_SPACING_MS = 10_000L
         /** Live status lapses when no new report has arrived for this long (watch time). */
         const val LIVE_REPORT_STALE_AFTER_MS = 30_000L
+        /** Cabin setpoint range accepted by SetCabinTemperature (about 60-85 °F). */
+        const val MIN_CABIN_TEMP_C = 15.5
+        const val MAX_CABIN_TEMP_C = 29.5
+        const val MIN_CHARGE_LIMIT_PERCENT = 50
+        const val MAX_CHARGE_LIMIT_PERCENT = 100
+        /**
+         * Charge rate (AC current limit) range offered on the watch. 80 A is what a Lucid Air
+         * reported on an 80 A charger; 10 A is a guess at the low end, to see what the car accepts.
+         */
+        const val MIN_CHARGE_CURRENT_AMPS = 10
+        const val MAX_CHARGE_CURRENT_AMPS = 80
+
+        /** The highest charge rate to offer: what the car says is available, up to [MAX_CHARGE_CURRENT_AMPS]. */
+        fun maxChargeCurrentAmps(vehicle: GravityVehicleSnapshot): Int =
+            vehicle.acCurrentLimitAmps
+                .takeIf { it >= MIN_CHARGE_CURRENT_AMPS }
+                ?.coerceAtMost(MAX_CHARGE_CURRENT_AMPS)
+                ?: MAX_CHARGE_CURRENT_AMPS
+        /** Seat diagram taps are sent once there has been no tap for this long. */
+        const val SEAT_TAP_SETTLE_MS = 1_500L
         private const val GRPC_RESOURCE_EXHAUSTED = 8
         private const val TAG = "LucidVM"
     }
@@ -150,8 +215,23 @@ class GravityWatchViewModel(
     private var expectedLockState: LockState? = null
     private var expectedFrunkOpen: Boolean? = null
     private var expectedRearTrunkOpen: Boolean? = null
+    /** Other state a sent command should produce (climate, charging), checked against each poll. */
+    private var expectedCondition: ExpectedCondition? = null
     private var awaitingPostCommandPoll: Boolean = false
     private var vehicleListJob: Job? = null
+    /**
+     * Keeps polling at [FAST_POLL_INTERVAL_MS] until a poll satisfies this (or its time cap runs
+     * out), after the controls are released: a started charge goes through Preparing first.
+     */
+    private var fastPollUntil: ((GravityVehicleSnapshot) -> Boolean)? = null
+    private var fastPollUntilJob: Job? = null
+    /** Sends the seat draft once taps settle. */
+    private var seatSendJob: Job? = null
+    /** True once the seat draft has been sent; it is then kept until the command settles. */
+    private var seatDraftSent: Boolean = false
+    /** Set when Max AC / Max Defrost is turned on from the watch; used when turning it off. */
+    private var maxAcRestore: ClimateRestorePoint? = null
+    private var defrostRestore: ClimateRestorePoint? = null
 
     // Report tracking for the active car: report times are Lucid's server clock, so they are only
     // compared with each other; staleness is measured with the watch's monotonic clock.
@@ -239,12 +319,14 @@ class GravityWatchViewModel(
     }
 
     private fun hasPendingExpectedChanges(): Boolean =
-        expectedLockState != null || expectedFrunkOpen != null || expectedRearTrunkOpen != null
+        expectedLockState != null || expectedFrunkOpen != null || expectedRearTrunkOpen != null ||
+            expectedCondition != null
 
     private fun clearExpectedChanges() {
         expectedLockState = null
         expectedFrunkOpen = null
         expectedRearTrunkOpen = null
+        expectedCondition = null
         confirmationTimeoutJob?.cancel()
         confirmationTimeoutJob = null
     }
@@ -252,8 +334,32 @@ class GravityWatchViewModel(
     private fun resolvePollIntervalMs(): Long = when {
         rateLimitBackoffJob?.isActive == true -> RATE_LIMITED_POLL_INTERVAL_MS
         !_uiState.value.isInteractive -> AMBIENT_POLL_INTERVAL_MS
-        fastPollWindowJob?.isActive == true || _uiState.value.isWakingVehicle -> FAST_POLL_INTERVAL_MS
+        fastPollWindowJob?.isActive == true || fastPollUntil != null || _uiState.value.isWakingVehicle ->
+            FAST_POLL_INTERVAL_MS
         else -> IDLE_POLL_INTERVAL_MS
+    }
+
+    /**
+     * Polls every second until a poll satisfies [done], for at most [maxMs]; independent of
+     * pending commands, so the controls can be free meanwhile.
+     */
+    private fun pollFastUntil(maxMs: Long, done: (GravityVehicleSnapshot) -> Boolean) {
+        fastPollUntil = done
+        fastPollUntilJob?.cancel()
+        fastPollUntilJob = viewModelScope.launch {
+            delay(maxMs)
+            stopFastPollUntil("time cap")
+        }
+        activateFastPolling()
+    }
+
+    private fun stopFastPollUntil(reason: String) {
+        if (fastPollUntil == null) return
+        Log.d(TAG, "Fast polling ended: $reason")
+        fastPollUntil = null
+        fastPollUntilJob?.cancel()
+        fastPollUntilJob = null
+        _uiState.update { it.copy(currentPollIntervalMs = resolvePollIntervalMs()) }
     }
 
     /** Polls every second for [FAST_POLL_WINDOW_MS] so a command's effect shows up promptly. */
@@ -340,6 +446,7 @@ class GravityWatchViewModel(
             )
             if (polledVehicle != null) {
                 reconcileExpectedChanges(polledVehicle)
+                if (fastPollUntil?.invoke(polledVehicle) == true) stopFastPollUntil("reached")
             }
             val liveReports = polledVehicle?.let { observeReport(it) } ?: false
             val reachable = polledVehicle?.powerState?.isAwake == true || liveReports
@@ -473,10 +580,20 @@ class GravityWatchViewModel(
             Log.i(TAG, "Confirmed by car: trunk ${polledVehicle.rearTrunkState.displayName}")
             expectedRearTrunkOpen = null
         }
+        val condition = expectedCondition
+        if (condition != null && condition.isMet(polledVehicle)) {
+            Log.i(TAG, "Confirmed by car: ${condition.description}")
+            expectedCondition = null
+        }
         if (!hasPendingExpectedChanges()) {
             confirmationTimeoutJob?.cancel()
             confirmationTimeoutJob = null
         }
+    }
+
+    private fun noteClimateChangedByUser() {
+        maxAcRestore?.climateChangedByUser = true
+        defrostRestore?.climateChangedByUser = true
     }
 
     /** Unfreezes the controls once no command is in flight or awaiting confirmation from the car. */
@@ -486,6 +603,7 @@ class GravityWatchViewModel(
         if (state.isCommandPending || awaitingPostCommandPoll || hasPendingExpectedChanges()) return
         Log.i(TAG, "\"${state.awaitingVehicleStateLabel}\" settled; controls released")
         _uiState.update { it.copy(awaitingVehicleStateLabel = null) }
+        if (seatDraftSent) discardSeatDraft()
     }
 
     private fun wakeIfAsleep(vehicle: GravityVehicleSnapshot) {
@@ -522,8 +640,9 @@ class GravityWatchViewModel(
         _uiState.update { it.copy(selectedRegion = region, errorMessage = null) }
     }
 
-    fun selectDialPage(page: WatchDialPage) {
-        _uiState.update { it.copy(currentDialPage = page) }
+    /** Shows [page]; [WatchPage.HOME] returns to the dashboard. */
+    fun openPage(page: WatchPage) {
+        _uiState.update { it.copy(currentPage = page) }
     }
 
     fun toggleTemperatureUnit() {
@@ -643,6 +762,10 @@ class GravityWatchViewModel(
             wakeJob?.cancel()
             wakeJob = null
             clearExpectedChanges()
+            discardSeatDraft()
+            maxAcRestore = null
+            defrostRestore = null
+            stopFastPollUntil("vehicle changed")
             awaitingPostCommandPoll = false
             resetReportTracking()
             _uiState.update {
@@ -761,6 +884,7 @@ class GravityWatchViewModel(
             expectedLockState = null
             expectedFrunkOpen = null
             expectedRearTrunkOpen = null
+            expectedCondition = null
             confirmationTimeoutJob = null
             _uiState.update { it.copy(errorMessage = "$actionLabel not confirmed by car") }
             releaseControlsIfSettled()
@@ -812,20 +936,56 @@ class GravityWatchViewModel(
         }
     }
 
+    /**
+     * Sends a command whose effect the car must confirm: controls stay frozen until a poll shows
+     * [isMet], or [STATE_CONFIRMATION_TIMEOUT_MS] of polling passes.
+     */
+    private fun executeConfirmedCommand(
+        vehicle: GravityVehicleSnapshot,
+        actionLabel: String,
+        expectation: String,
+        isMet: (GravityVehicleSnapshot) -> Boolean,
+        block: suspend (GravityVehicleSnapshot) -> Unit
+    ) {
+        expectedCondition = ExpectedCondition(expectation, isMet)
+        executeVehicleCommand(vehicle, actionLabel, awaitsStateChange = true, block = block)
+    }
+
     fun toggleChargePort() {
         val current = controllableVehicle("toggle charge port") ?: return
-        val nextState = if (current.chargePortState.isOpen) DoorState.CLOSED else DoorState.OPEN
-        val label = if (nextState == DoorState.OPEN) "Opening Charge Port" else "Closing Charge Port"
-        executeVehicleCommand(current, label) { vehicle ->
+        if (!current.hasPoweredChargePortDoor) {
+            // The Gravity's port door is manual: the car would never confirm a command.
+            Log.i(TAG, "Ignoring \"toggle charge port\": ${current.model.displayName} has no powered port door")
+            return
+        }
+        if (current.chargeState.isCablePluggedIn) {
+            // The car won't move the port door with a cable connected.
+            Log.i(TAG, "Ignoring \"toggle charge port\": charge cable connected")
+            return
+        }
+        val open = !current.chargePortState.isOpen
+        val nextState = if (open) DoorState.OPEN else DoorState.CLOSED
+        executeConfirmedCommand(
+            current,
+            actionLabel = if (open) "Opening Charge Port" else "Closing Charge Port",
+            expectation = "charge port ${nextState.displayName}",
+            isMet = { it.chargePortState.isOpen == open }
+        ) { vehicle ->
             repository.setChargePortState(vehicle, nextState)
         }
     }
 
+    /** Turns cabin climate on at the car's current target temperature, or off. */
     fun toggleClimatePrecondition() {
         val current = controllableVehicle("toggle climate") ?: return
         val turnOn = !current.hvacPower.isActive
-        val label = if (turnOn) "Starting Cabin Climate" else "Stopping Cabin Climate"
-        executeVehicleCommand(current, label) { vehicle ->
+        noteClimateChangedByUser()
+        executeConfirmedCommand(
+            current,
+            actionLabel = if (turnOn) "Starting Climate" else "Stopping Climate",
+            expectation = "climate ${if (turnOn) "on" else "off"}",
+            isMet = { it.hvacPower.isActive == turnOn }
+        ) { vehicle ->
             repository.setCabinTemperature(
                 vehicle = vehicle,
                 temperatureCelsius = if (turnOn) vehicle.targetTempCelsius else null
@@ -833,41 +993,229 @@ class GravityWatchViewModel(
         }
     }
 
-    fun adjustTargetTemperature(deltaCelsius: Double) {
-        val current = controllableVehicle("adjust temperature") ?: return
-        val nextTemp = (current.targetTempCelsius + deltaCelsius).coerceIn(15.5, 29.5)
-        executeVehicleCommand(current, "Setting Cabin Temp") { vehicle ->
-            repository.setCabinTemperature(vehicle, nextTemp)
+    /**
+     * Sets the cabin target temperature. Lucid's SetCabinTemperature always carries a power mode,
+     * so this also turns cabin climate on.
+     */
+    fun setCabinTargetTemperature(celsius: Double) {
+        val current = controllableVehicle("set cabin temperature") ?: return
+        noteClimateChangedByUser()
+        val target = celsius.coerceIn(MIN_CABIN_TEMP_C, MAX_CABIN_TEMP_C)
+        executeConfirmedCommand(
+            current,
+            actionLabel = if (current.hvacPower.isActive) "Setting Cabin Temp" else "Starting Climate",
+            expectation = "climate on at ${String.format(Locale.US, "%.1f", target)}°C",
+            // The car may round the setpoint (e.g. to 0.5 °C), so accept anything close.
+            isMet = { it.hvacPower.isActive && abs(it.targetTempCelsius - target) < 0.5 }
+        ) { vehicle ->
+            repository.setCabinTemperature(vehicle, target)
         }
     }
 
+    /** Vents all windows, or closes them all ([vent] false). */
+    fun setAllWindows(vent: Boolean) {
+        val current = controllableVehicle(if (vent) "crack windows" else "close windows") ?: return
+        executeConfirmedCommand(
+            current,
+            actionLabel = if (vent) "Cracking Windows" else "Closing Windows",
+            expectation = "windows ${if (vent) "open" else "closed"}",
+            isMet = { it.windowsOpen == vent }
+        ) { vehicle ->
+            repository.setAllWindows(vehicle, vent)
+        }
+    }
+
+    /**
+     * Max AC on, or off. Turning it off also turns climate back off when Max AC turned it on (see
+     * [ClimateRestorePoint]).
+     */
+    fun toggleMaxAc() {
+        val current = controllableVehicle("toggle max AC") ?: return
+        if (!current.maxAcEnabled) {
+            maxAcRestore = ClimateRestorePoint(climateWasOn = current.hvacPower.isActive)
+            executeConfirmedCommand(
+                current,
+                actionLabel = "Enabling Max AC",
+                expectation = "max AC on",
+                isMet = { it.maxAcEnabled }
+            ) { vehicle ->
+                repository.setMaxAc(vehicle, true)
+            }
+            return
+        }
+        val restore = maxAcRestore
+        maxAcRestore = null
+        disableClimateMode(
+            current,
+            actionLabel = "Disabling Max AC",
+            modeName = "max AC",
+            restore = restore,
+            isModeOff = { !it.maxAcEnabled }
+        ) { vehicle ->
+            repository.setMaxAc(vehicle, false)
+        }
+    }
+
+    /** Max Defrost on, or off; like [toggleMaxAc], turning it off turns climate back off. */
     fun toggleDefrost() {
         val current = controllableVehicle("toggle defrost") ?: return
-        val nextDefrost = if (current.defrostState.isEnabled) DefrostState.OFF else DefrostState.ON
-        val label = if (nextDefrost == DefrostState.ON) "Enabling Max Defrost" else "Disabling Defrost"
-        executeVehicleCommand(current, label) { vehicle ->
-            repository.setDefrost(vehicle, nextDefrost)
+        if (!current.defrostState.isEnabled) {
+            defrostRestore = ClimateRestorePoint(climateWasOn = current.hvacPower.isActive)
+            executeConfirmedCommand(
+                current,
+                actionLabel = "Enabling Max Defrost",
+                expectation = DefrostState.ON.displayName,
+                isMet = { it.defrostState == DefrostState.ON }
+            ) { vehicle ->
+                repository.setDefrost(vehicle, DefrostState.ON)
+            }
+            return
+        }
+        val restore = defrostRestore
+        defrostRestore = null
+        disableClimateMode(
+            current,
+            actionLabel = "Disabling Defrost",
+            modeName = "defrost",
+            restore = restore,
+            isModeOff = { it.defrostState == DefrostState.OFF }
+        ) { vehicle ->
+            repository.setDefrost(vehicle, DefrostState.OFF)
         }
     }
 
-    fun cycleDriverSeatHeat() {
-        val current = controllableVehicle("cycle driver seat heat") ?: return
-        val nextMode = current.driverSeatHeatMode.nextCycle()
-        executeVehicleCommand(current, "Driver Seat Heat (${nextMode.displayName})") { vehicle ->
-            repository.setSeatClimate(
-                vehicle = vehicle,
-                driverHeat = nextMode,
-                driverVent = vehicle.driverSeatVentMode,
-                passengerHeat = vehicle.passengerSeatHeatMode
-            )
+    /**
+     * Turns a climate mode off with [turnOff], and climate off too when [restore] says the mode
+     * turned it on; one confirmed command.
+     */
+    private fun disableClimateMode(
+        current: GravityVehicleSnapshot,
+        actionLabel: String,
+        modeName: String,
+        restore: ClimateRestorePoint?,
+        isModeOff: (GravityVehicleSnapshot) -> Boolean,
+        turnOff: suspend (GravityVehicleSnapshot) -> Unit
+    ) {
+        val climateOff = restore?.turnsClimateOff(current) == true
+        executeConfirmedCommand(
+            current,
+            actionLabel = actionLabel,
+            expectation = if (climateOff) "$modeName off; climate off" else "$modeName off",
+            isMet = { polled -> isModeOff(polled) && (!climateOff || !polled.hvacPower.isActive) }
+        ) { vehicle ->
+            turnOff(vehicle)
+            if (climateOff) {
+                repository.setCabinTemperature(vehicle, temperatureCelsius = null)
+            }
         }
     }
 
-    fun cycleSteeringWheelHeater() {
-        val current = controllableVehicle("cycle steering heater") ?: return
-        val nextLevel = current.steeringHeaterLevel.nextCycle()
-        executeVehicleCommand(current, "Steering Heater (${nextLevel.displayName})") { vehicle ->
-            repository.setSteeringWheelHeater(vehicle, nextLevel)
+    /**
+     * A tap on a seat in the seat diagram: steps its [kind] level Off -> High -> Med -> Low -> Off.
+     * Nothing is sent until taps stop for [SEAT_TAP_SETTLE_MS], so several seats and levels can be
+     * set with one command.
+     */
+    fun tapSeat(seat: ClimateSeat, kind: SeatClimateKind) {
+        val vehicle = seatDiagramVehicle("tap ${seat.label.lowercase()} seat") ?: return
+        val draft = _uiState.value.seatDraft ?: vehicle.seatClimate
+        val next = draft.level(seat, kind).nextTap()
+        _uiState.update { it.copy(seatDraft = draft.with(seat, kind, next)) }
+        scheduleSeatDraftSend()
+    }
+
+    /**
+     * A tap on the steering wheel in the seat diagram: on/off on cars that report no level (the
+     * Air, where "on" is sent as LEVEL_2: Lucid Cloud rejects LEVEL_1 and LEVEL_3 for an Air, and
+     * LEVEL_2 is what the BearTalk Lucid client sends), otherwise L3 -> L2 -> L1 -> Off.
+     */
+    fun tapSteeringWheel() {
+        val vehicle = seatDiagramVehicle("tap steering wheel") ?: return
+        val current = _uiState.value.steeringDraft ?: vehicle.steeringHeaterSetting
+        val next = if (vehicle.hasOnOffSteeringHeater) {
+            if (current.bars > 0) SteeringWheelHeaterLevel.OFF else SteeringWheelHeaterLevel.LEVEL_2
+        } else {
+            current.nextTap()
+        }
+        _uiState.update { it.copy(steeringDraft = next) }
+        scheduleSeatDraftSend()
+    }
+
+    private fun seatDiagramVehicle(action: String): GravityVehicleSnapshot? {
+        if (seatDraftSent) {
+            Log.i(TAG, "Ignoring \"$action\": seat changes already sent")
+            return null
+        }
+        return controllableVehicle(action)
+    }
+
+    private fun scheduleSeatDraftSend() {
+        seatSendJob?.cancel()
+        seatSendJob = viewModelScope.launch {
+            delay(SEAT_TAP_SETTLE_MS)
+            seatSendJob = null
+            sendSeatDraft()
+        }
+    }
+
+    private fun discardSeatDraft() {
+        seatSendJob?.cancel()
+        seatSendJob = null
+        seatDraftSent = false
+        _uiState.update { it.copy(seatDraft = null, steeringDraft = null) }
+    }
+
+    /** Sends whatever the seat diagram taps changed, as one confirmed command. */
+    private fun sendSeatDraft() {
+        val state = _uiState.value
+        val vehicle = controllableVehicle("send seat changes")
+        if (vehicle == null) {
+            discardSeatDraft()
+            return
+        }
+        val seats = state.seatDraft?.takeUnless { it.sameLevelsAs(vehicle.seatClimate) }
+        val wheel = state.steeringDraft?.takeUnless { it.bars == vehicle.steeringHeaterSetting.bars }
+        if (seats == null && wheel == null) {
+            discardSeatDraft()
+            return
+        }
+        seatDraftSent = true
+        val label = when {
+            seats != null && wheel != null -> "Setting Seats & Wheel"
+            seats != null -> "Setting Seats"
+            wheel!!.bars > 0 -> "Steering Heat On"
+            else -> "Steering Heat Off"
+        }
+        executeConfirmedCommand(
+            vehicle,
+            actionLabel = label,
+            expectation = listOfNotNull(
+                seats?.describe(),
+                wheel?.let { "steering heat ${it.displayName}" }
+            ).joinToString("; "),
+            isMet = { polled ->
+                (seats == null || polled.seatClimate.sameLevelsAs(seats)) &&
+                    (wheel == null || polled.steeringHeaterSetting.bars == wheel.bars)
+            }
+        ) { target ->
+            if (seats != null) {
+                repository.setSeatClimate(
+                    vehicle = target,
+                    driverHeat = seats.driverHeat,
+                    driverVent = seats.driverVent,
+                    passengerHeat = seats.passengerHeat,
+                    // Rear heat and passenger cooling are only sent when they change, and only to
+                    // cars that have them.
+                    rearHeat = seats.rearHeat.takeIf {
+                        target.showsRearSeatHeat && it.bars != target.rearSeatHeatMode.bars
+                    },
+                    passengerVent = seats.passengerVent.takeIf {
+                        target.showsSeatCooling && it.bars != target.passengerSeatVentMode.bars
+                    }
+                )
+            }
+            if (wheel != null) {
+                repository.setSteeringWheelHeater(target, wheel)
+            }
         }
     }
 
@@ -890,24 +1238,68 @@ class GravityWatchViewModel(
 
     fun setChargeLimit(limitPercent: Int) {
         val current = controllableVehicle("set charge limit") ?: return
-        val clamped = limitPercent.coerceIn(50, 100)
-        executeVehicleCommand(current, "Setting Charge Limit to $clamped%") { vehicle ->
+        val clamped = limitPercent.coerceIn(MIN_CHARGE_LIMIT_PERCENT, MAX_CHARGE_LIMIT_PERCENT)
+        executeConfirmedCommand(
+            current,
+            actionLabel = "Charge Limit $clamped%",
+            expectation = "charge limit $clamped%",
+            isMet = { it.chargeLimitPercent == clamped }
+        ) { vehicle ->
             repository.setChargeLimit(vehicle, clamped)
         }
     }
 
+    /** Sets the AC charging current limit (charge rate). */
+    fun setChargeCurrentLimit(amps: Int) {
+        val current = controllableVehicle("set charge rate") ?: return
+        val clamped = amps.coerceIn(MIN_CHARGE_CURRENT_AMPS, maxChargeCurrentAmps(current))
+        executeConfirmedCommand(
+            current,
+            actionLabel = "Charge Rate $clamped A",
+            expectation = "charge rate $clamped A",
+            isMet = { it.sessionAcCurrentLimitAmps == clamped }
+        ) { vehicle ->
+            repository.setAcCurrentLimit(vehicle, clamped)
+        }
+    }
+
+    /** Starts charging when a cable is connected and the car is not charging; otherwise stops it. */
     fun toggleCharging() {
         val current = controllableVehicle("toggle charging") ?: return
         val startCharging = !current.chargeState.isActivelyCharging
-        val label = if (startCharging) "Starting Charge" else "Stopping Charge"
-        executeVehicleCommand(current, label) { vehicle ->
-            repository.setChargingActive(vehicle, startCharging)
+        if (startCharging && !current.chargeState.isCablePluggedIn) {
+            Log.i(TAG, "Ignoring \"start charging\": no charge cable connected")
+            return
+        }
+        if (!startCharging) {
+            stopCharging()
+            return
+        }
+        // The car has taken the command once it reports a starting stage (Connecting ... Preparing),
+        // which can last a while before Charging: release the controls then, but keep polling fast
+        // until it is actually charging.
+        executeConfirmedCommand(
+            current,
+            actionLabel = "Starting Charge",
+            expectation = "charging starting",
+            isMet = { it.chargeState.isActivelyCharging || it.chargeState.isStartingCharge }
+        ) { vehicle ->
+            repository.setChargingActive(vehicle, true)
+        }
+        pollFastUntil(CHARGE_START_FAST_POLL_MAX_MS) {
+            it.chargeState.isActivelyCharging || !it.chargeState.isCablePluggedIn ||
+                it.chargeState == ChargeState.CHARGING_END_ERROR
         }
     }
 
     fun stopCharging() {
         val current = controllableVehicle("stop charging") ?: return
-        executeVehicleCommand(current, "Stopping Charge") { vehicle ->
+        executeConfirmedCommand(
+            current,
+            actionLabel = "Stopping Charge",
+            expectation = "charging stopped",
+            isMet = { !it.chargeState.isActivelyCharging }
+        ) { vehicle ->
             repository.setChargingActive(vehicle, false)
         }
     }
@@ -934,6 +1326,10 @@ class GravityWatchViewModel(
         fastPollWindowJob?.cancel()
         rateLimitBackoffJob?.cancel()
         clearExpectedChanges()
+        discardSeatDraft()
+        maxAcRestore = null
+        defrostRestore = null
+        stopFastPollUntil("signed out")
         awaitingPostCommandPoll = false
         resetReportTracking()
         repository.logout()

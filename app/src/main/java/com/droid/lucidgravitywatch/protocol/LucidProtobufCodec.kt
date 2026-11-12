@@ -13,6 +13,7 @@ import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.LucidSession
 import com.droid.lucidgravitywatch.model.PowerState
 import com.droid.lucidgravitywatch.model.SeatClimateMode
+import com.droid.lucidgravitywatch.model.SteeringHeaterStatus
 import com.droid.lucidgravitywatch.model.SteeringWheelHeaterLevel
 import com.droid.lucidgravitywatch.model.VehicleModel
 import com.droid.lucidgravitywatch.model.WalkawayState
@@ -33,6 +34,16 @@ object LucidProtobufCodec {
     private const val WIRE_FIXED64 = 1
     private const val WIRE_LENGTH_DELIMITED = 2
     private const val WIRE_FIXED32 = 5
+
+    /** Cabin/outside temperatures outside this range are placeholders, not readings. */
+    private val PLAUSIBLE_TEMP_C = -50.0..80.0
+
+    /**
+     * WindowPositionStatus values that count as open: below the short drop (the small drop
+     * frameless windows make when a door opens), vent drop, long drop, fully open, hard stop down,
+     * and anywhere between the short drop and fully open.
+     */
+    private val OPEN_WINDOW_STATUSES = setOf(4, 5, 10, 11, 12, 14)
 
     data class DecodedLoginResult(
         val session: LucidSession,
@@ -328,6 +339,8 @@ object LucidProtobufCodec {
     fun decodeGetVehicleStateResponse(bytes: ByteArray, vehicle: GravityVehicleSnapshot): GravityVehicleSnapshot {
         val state = parseRawFields(bytes).getSubMessage(2) ?: return vehicle
         val decoded = decodeVehicleState(
+            hasHeatedRearSeats = vehicle.hasHeatedRearSeats,
+            hasVentilatedFrontSeats = vehicle.hasVentilatedFrontSeats,
             state = state,
             vehicleId = vehicle.vehicleId,
             vin = vehicle.vin,
@@ -366,6 +379,14 @@ object LucidProtobufCodec {
                 exteriorTempCelsius = previous.exteriorTempCelsius
             )
         }
+        // A waking Air briefly reported the cabin at 329.4 °C (shown as 625 °F): keep the last
+        // reading instead of an impossible one.
+        if (merged.interiorTempCelsius !in PLAUSIBLE_TEMP_C) {
+            merged = merged.copy(interiorTempCelsius = previous.interiorTempCelsius)
+        }
+        if (merged.exteriorTempCelsius !in PLAUSIBLE_TEMP_C) {
+            merged = merged.copy(exteriorTempCelsius = previous.exteriorTempCelsius)
+        }
         if (missing(4)) {
             merged = merged.copy(
                 lockState = previous.lockState,
@@ -376,7 +397,8 @@ object LucidProtobufCodec {
                 frontLeftDoor = previous.frontLeftDoor,
                 frontRightDoor = previous.frontRightDoor,
                 rearLeftDoor = previous.rearLeftDoor,
-                rearRightDoor = previous.rearRightDoor
+                rearRightDoor = previous.rearRightDoor,
+                windowsOpen = previous.windowsOpen
             )
         }
         if (missing(6)) {
@@ -388,7 +410,9 @@ object LucidProtobufCodec {
                 chargeLimitPercent = previous.chargeLimitPercent,
                 chargeRateKw = previous.chargeRateKw,
                 chargeRateMph = previous.chargeRateMph,
-                sessionMinutesRemaining = previous.sessionMinutesRemaining
+                sessionMinutesRemaining = previous.sessionMinutesRemaining,
+                acCurrentLimitAmps = previous.acCurrentLimitAmps,
+                sessionAcCurrentLimitAmps = previous.sessionAcCurrentLimitAmps
             )
         }
         if (missing(17)) {
@@ -399,7 +423,10 @@ object LucidProtobufCodec {
                 driverSeatHeatMode = previous.driverSeatHeatMode,
                 driverSeatVentMode = previous.driverSeatVentMode,
                 passengerSeatHeatMode = previous.passengerSeatHeatMode,
+                passengerSeatVentMode = previous.passengerSeatVentMode,
                 steeringHeaterLevel = previous.steeringHeaterLevel,
+                steeringHeaterStatus = previous.steeringHeaterStatus,
+                rearSeatHeatMode = previous.rearSeatHeatMode,
                 targetTempCelsius = previous.targetTempCelsius
             )
         }
@@ -420,8 +447,12 @@ object LucidProtobufCodec {
             if (model == VehicleModel.GRAVITY) "Lucid Gravity" else "Lucid ${model.displayName}"
         }
         val paintColorName = paintColorNameFromProto(config?.getInt(6) ?: 0)
+        val hasHeatedRearSeats = (config?.getInt(25) ?: 0) == 2 // SECOND_ROW_HEATED_SEATS_AVAILABLE
+        val hasVentilatedFrontSeats = (config?.getInt(24) ?: 0) == 2 // FRONT_SEATS_VENTILATION_AVAILABLE
 
         return decodeVehicleState(
+            hasHeatedRearSeats = hasHeatedRearSeats,
+            hasVentilatedFrontSeats = hasVentilatedFrontSeats,
             state = veh.getSubMessage(4),
             vehicleId = vehicleId,
             vin = vin,
@@ -433,6 +464,8 @@ object LucidProtobufCodec {
     }
 
     private fun decodeVehicleState(
+        hasHeatedRearSeats: Boolean,
+        hasVentilatedFrontSeats: Boolean,
         state: ProtoFieldMap?,
         vehicleId: String,
         vin: String,
@@ -459,8 +492,10 @@ object LucidProtobufCodec {
         val batteryCapacityKwh = battery?.getDouble(4) ?: 0.0
         val batteryPreconStatus = BatteryPreconStatus.fromProto(battery?.getInt(9) ?: 0)
 
-        val interiorTempCelsius = cabin?.getDouble(1) ?: 21.0
-        val exteriorTempCelsius = cabin?.getDouble(2) ?: 20.0
+        // Out-of-range readings become NaN ("no reading"): merging a GetVehicleState then keeps
+        // the previous value, and with nothing to keep the screen shows "--".
+        val interiorTempCelsius = (cabin?.getDouble(1) ?: 21.0).takeIf { it in PLAUSIBLE_TEMP_C } ?: Double.NaN
+        val exteriorTempCelsius = (cabin?.getDouble(2) ?: 20.0).takeIf { it in PLAUSIBLE_TEMP_C } ?: Double.NaN
 
         val lockState = LockState.fromProto(body?.getInt(1) ?: 0)
         val frunkState = DoorState.fromProto(body?.getInt(2) ?: 0)
@@ -471,6 +506,9 @@ object LucidProtobufCodec {
         val rearRightDoor = DoorState.fromProto(body?.getInt(7) ?: 0)
         val chargePortState = DoorState.fromProto(body?.getInt(8) ?: 0)
         val walkawayState = WalkawayState.fromProto(body?.getInt(9) ?: 0)
+        val windowPositions = body?.getSubMessage(16)
+        val windowsOpen = (body?.getInt(14) ?: 0) == 2 || // ALL_WINDOW_POSITION_OPEN
+            (1..4).any { (windowPositions?.getInt(it) ?: 0) in OPEN_WINDOW_STATUSES }
 
         val odometerKm = chassis?.getDouble(1) ?: 0.0
         val softwareVersion = chassis?.getString(16).orEmpty()
@@ -481,6 +519,9 @@ object LucidProtobufCodec {
         val chargeRateKw = charging?.getDouble(19) ?: 0.0
         val chargeRateMph = charging?.getDouble(12) ?: 0.0
         val chargeLimitDouble = charging?.getDouble(14) ?: 0.0
+        // SetACCurrLimit changes field 29; field 30 stayed at the charger's 80 A.
+        val sessionAcCurrentLimitAmps = charging?.getInt(29) ?: 0 // active_session_ac_current_limit
+        val acCurrentLimitAmps = charging?.getInt(30) ?: 0 // energy_ac_current_limit
         val resolvedChargeLimit = if (chargeLimitDouble > 0.0) {
             chargeLimitDouble.roundToInt()
         } else if (chargeLimitInt > 0) {
@@ -496,7 +537,12 @@ object LucidProtobufCodec {
         val driverSeatHeatMode = SeatClimateMode.fromProto(seats?.getInt(1) ?: 2)
         val driverSeatVentMode = SeatClimateMode.fromProto(seats?.getInt(5) ?: 2)
         val passengerSeatHeatMode = SeatClimateMode.fromProto(seats?.getInt(7) ?: 2)
-        val steeringHeaterLevel = SteeringWheelHeaterLevel.fromProto(hvac?.getInt(12) ?: 1)
+        val passengerSeatVentMode = SeatClimateMode.fromProto(seats?.getInt(11) ?: 2)
+        // Absent (UNKNOWN) on cars without heated rear seats.
+        val rearSeatHeatMode = SeatClimateMode.fromProto(seats?.getInt(13) ?: 0)
+        // Absent (0) on the Air, which reports only the on/off status in field 11.
+        val steeringHeaterLevel = SteeringWheelHeaterLevel.fromProto(hvac?.getInt(12) ?: 0)
+        val steeringHeaterStatus = SteeringHeaterStatus.fromProto(hvac?.getInt(11) ?: 0)
         val targetTempCelsius = (hvac?.getDouble(13) ?: 0.0).let {
             if (it in 15.0..30.0) it else 21.0
         }
@@ -529,6 +575,8 @@ object LucidProtobufCodec {
             chargeRateKw = chargeRateKw,
             chargeRateMph = chargeRateMph,
             sessionMinutesRemaining = sessionMinutesRemaining,
+            acCurrentLimitAmps = acCurrentLimitAmps,
+            sessionAcCurrentLimitAmps = sessionAcCurrentLimitAmps,
             interiorTempCelsius = interiorTempCelsius,
             exteriorTempCelsius = exteriorTempCelsius,
             targetTempCelsius = targetTempCelsius,
@@ -539,6 +587,12 @@ object LucidProtobufCodec {
             driverSeatVentMode = driverSeatVentMode,
             passengerSeatHeatMode = passengerSeatHeatMode,
             steeringHeaterLevel = steeringHeaterLevel,
+            steeringHeaterStatus = steeringHeaterStatus,
+            rearSeatHeatMode = rearSeatHeatMode,
+            hasHeatedRearSeats = hasHeatedRearSeats,
+            passengerSeatVentMode = passengerSeatVentMode,
+            hasVentilatedFrontSeats = hasVentilatedFrontSeats,
+            windowsOpen = windowsOpen,
             odometerKm = odometerKm,
             softwareVersion = softwareVersion,
             lastUpdatedMs = lastUpdatedMs
@@ -638,7 +692,11 @@ object LucidProtobufCodec {
         vehicleId: String,
         driverHeat: SeatClimateMode,
         driverVent: SeatClimateMode,
-        passengerHeat: SeatClimateMode
+        passengerHeat: SeatClimateMode,
+        /** All three rear seats; null leaves them unchanged. */
+        rearHeat: SeatClimateMode? = null,
+        /** Null leaves the passenger seat's ventilation unchanged. */
+        passengerVent: SeatClimateMode? = null
     ): ByteArray {
         val writer = ProtoWriter()
         writer.writeStringField(1, vehicleId)
@@ -652,6 +710,15 @@ object LucidProtobufCodec {
         writer.writeIntField(9, passengerHeat.protoValue) // front_passenger_heat_backrest_zone3
         writer.writeIntField(10, passengerHeat.protoValue) // front_passenger_heat_cushion_zone2
         writer.writeIntField(11, passengerHeat.protoValue) // front_passenger_heat_cushion_zone4
+        if (passengerVent != null) {
+            writer.writeIntField(12, passengerVent.protoValue) // front_passenger_vent_backrest
+            writer.writeIntField(13, passengerVent.protoValue) // front_passenger_vent_cushion
+        }
+        if (rearHeat != null) {
+            writer.writeIntField(14, rearHeat.protoValue) // rear_passenger_heat_left
+            writer.writeIntField(15, rearHeat.protoValue) // rear_passenger_heat_center
+            writer.writeIntField(16, rearHeat.protoValue) // rear_passenger_heat_right
+        }
         return writer.toByteArray()
     }
 
@@ -675,9 +742,25 @@ object LucidProtobufCodec {
         return writer.toByteArray()
     }
 
+    /** All windows to the vent position ([vent]) or all the way up. */
+    fun encodeAllWindowControlRequest(vehicleId: String, vent: Boolean): ByteArray {
+        val writer = ProtoWriter()
+        writer.writeIntField(1, if (vent) 3 else 2) // WINDOW_SWITCH_STATE_VENT_ALL / _AUTO_UP_ALL
+        writer.writeStringField(2, vehicleId)
+        return writer.toByteArray()
+    }
+
     fun encodeSetMaxAcRequest(vehicleId: String, enabled: Boolean): ByteArray {
         val writer = ProtoWriter()
         writer.writeIntField(1, if (enabled) 2 else 1)
+        writer.writeStringField(2, vehicleId)
+        return writer.toByteArray()
+    }
+
+    /** SetACCurrLimit: the AC charging current limit in amps. */
+    fun encodeSetAcCurrentLimitRequest(vehicleId: String, amps: Int): ByteArray {
+        val writer = ProtoWriter()
+        writer.writeIntField(1, amps)
         writer.writeStringField(2, vehicleId)
         return writer.toByteArray()
     }
@@ -752,6 +835,11 @@ object LucidProtobufCodec {
         driverSeatVentCode: Int = 2,
         passengerSeatHeatCode: Int = 2,
         steeringHeaterLevelCode: Int = 1,
+        steeringHeaterStatusCode: Int = 0,
+        rearSeatHeatCode: Int = 0,
+        rearHeatedSeatsAvailabilityCode: Int = 0,
+        passengerSeatVentCode: Int = 2,
+        frontVentilationAvailabilityCode: Int = 0,
         odometerKm: Double = 1200.0,
         softwareVersion: String = "2.5.10",
         lastUpdatedMs: Long = 1792113000000L
@@ -802,6 +890,11 @@ object LucidProtobufCodec {
             driverSeatVentCode = driverSeatVentCode,
             passengerSeatHeatCode = passengerSeatHeatCode,
             steeringHeaterLevelCode = steeringHeaterLevelCode,
+            steeringHeaterStatusCode = steeringHeaterStatusCode,
+            rearSeatHeatCode = rearSeatHeatCode,
+            rearHeatedSeatsAvailabilityCode = rearHeatedSeatsAvailabilityCode,
+            passengerSeatVentCode = passengerSeatVentCode,
+            frontVentilationAvailabilityCode = frontVentilationAvailabilityCode,
             odometerKm = odometerKm,
             softwareVersion = softwareVersion,
             lastUpdatedMs = lastUpdatedMs
@@ -840,7 +933,11 @@ object LucidProtobufCodec {
         powerCode: Int = 9,
         lockCode: Int = 2,
         frunkCode: Int = 2,
-        batteryPercent: Double = 80.0
+        batteryPercent: Double = 80.0,
+        interiorTempC: Double = 21.0,
+        exteriorTempC: Double = 18.0,
+        windowStatusCode: Int = 0,
+        acCurrentLimitAmps: Int = 0
     ): ByteArray {
         val vehicleBytes = buildVehicleProtoBytes(
             vehicleId = vehicleId,
@@ -849,7 +946,11 @@ object LucidProtobufCodec {
             powerCode = powerCode,
             lockCode = lockCode,
             frunkCode = frunkCode,
-            batteryPercent = batteryPercent
+            batteryPercent = batteryPercent,
+            interiorTempC = interiorTempC,
+            exteriorTempC = exteriorTempC,
+            windowStatusCode = windowStatusCode,
+            acCurrentLimitAmps = acCurrentLimitAmps
         )
         val stateBytes = parseRawFields(vehicleBytes).bytesList.getValue(4).last()
         return ProtoWriter().apply {
@@ -891,9 +992,16 @@ object LucidProtobufCodec {
         driverSeatVentCode: Int = 2,
         passengerSeatHeatCode: Int = 2,
         steeringHeaterLevelCode: Int = 1,
+        steeringHeaterStatusCode: Int = 0,
+        rearSeatHeatCode: Int = 0,
+        rearHeatedSeatsAvailabilityCode: Int = 0,
+        passengerSeatVentCode: Int = 2,
+        frontVentilationAvailabilityCode: Int = 0,
         odometerKm: Double = 1200.0,
         softwareVersion: String = "2.5.10",
-        lastUpdatedMs: Long = 1792113000000L
+        lastUpdatedMs: Long = 1792113000000L,
+        windowStatusCode: Int = 0,
+        acCurrentLimitAmps: Int = 0
     ): ByteArray {
         val configBytes = ProtoWriter().apply {
             writeStringField(1, vin)
@@ -901,6 +1009,8 @@ object LucidProtobufCodec {
             writeIntField(3, variantCode)
             writeStringField(5, nickname)
             writeIntField(6, paintColorCode)
+            if (frontVentilationAvailabilityCode != 0) writeIntField(24, frontVentilationAvailabilityCode)
+            if (rearHeatedSeatsAvailabilityCode != 0) writeIntField(25, rearHeatedSeatsAvailabilityCode)
         }.toByteArray()
 
         val batteryBytes = ProtoWriter().apply {
@@ -926,6 +1036,11 @@ object LucidProtobufCodec {
             writeIntField(7, 2)
             writeIntField(8, chargePortCode)
             writeIntField(9, walkawayCode)
+            if (windowStatusCode != 0) {
+                writeBytesField(16, ProtoWriter().apply {
+                    (1..4).forEach { writeIntField(it, windowStatusCode) }
+                }.toByteArray())
+            }
         }.toByteArray()
 
         val chassisBytes = ProtoWriter().apply {
@@ -940,12 +1055,22 @@ object LucidProtobufCodec {
             writeDoubleField(19, chargeRateKw)
             writeDoubleField(12, chargeRateMph)
             writeDoubleField(14, chargeLimitPercent)
+            if (acCurrentLimitAmps != 0) {
+                writeIntField(29, acCurrentLimitAmps)
+                writeIntField(30, acCurrentLimitAmps)
+            }
         }.toByteArray()
 
         val seatsBytes = ProtoWriter().apply {
             writeIntField(1, driverSeatHeatCode)
             writeIntField(5, driverSeatVentCode)
             writeIntField(7, passengerSeatHeatCode)
+            writeIntField(11, passengerSeatVentCode)
+            if (rearSeatHeatCode != 0) {
+                writeIntField(13, rearSeatHeatCode)
+                writeIntField(14, rearSeatHeatCode)
+                writeIntField(15, rearSeatHeatCode)
+            }
         }.toByteArray()
 
         val hvacBytes = ProtoWriter().apply {
@@ -953,7 +1078,8 @@ object LucidProtobufCodec {
             writeIntField(2, defrostCode)
             writeIntField(7, maxAcCode)
             writeBytesField(8, seatsBytes)
-            writeIntField(12, steeringHeaterLevelCode)
+            if (steeringHeaterStatusCode != 0) writeIntField(11, steeringHeaterStatusCode)
+            if (steeringHeaterLevelCode != 0) writeIntField(12, steeringHeaterLevelCode)
             writeDoubleField(13, targetTempC)
         }.toByteArray()
 

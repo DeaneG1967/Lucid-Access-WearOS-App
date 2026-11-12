@@ -16,6 +16,7 @@ import com.droid.lucidgravitywatch.model.VehicleModel
 import com.droid.lucidgravitywatch.model.WalkawayState
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -153,6 +154,110 @@ class LucidProtobufCodecTest {
         assertEquals(SeatClimateMode.MEDIUM, vehicle.driverSeatHeatMode)
         assertEquals(SteeringWheelHeaterLevel.LEVEL_2, vehicle.steeringHeaterLevel)
         assertEquals("2.5.12", vehicle.softwareVersion)
+    }
+
+    @Test
+    fun decodeVehicle_airReportsSteeringHeaterOnOffWithoutLevel() {
+        val bytes = LucidProtobufCodec.buildLoginResponseBytesForTest(
+            uid = "uid-air",
+            idToken = "token",
+            refreshToken = "refresh",
+            gigyaJwt = "jwt",
+            expiryTimeSec = 0,
+            email = "owner@lucidmotors.com",
+            firstName = "A",
+            lastName = "B",
+            vehicleId = "veh-air",
+            vin = "50EA1GBA5NA005210",
+            nickname = "PE GT",
+            modelCode = 1,
+            steeringHeaterLevelCode = 0, // the Air never reports a level
+            steeringHeaterStatusCode = 2 // STEERING_HEATER_STATUS_ON
+        )
+        val air = LucidProtobufCodec.decodeLoginResponse(bytes, LucidRegion.US).vehicles.single()
+        assertEquals(SteeringWheelHeaterLevel.UNKNOWN, air.steeringHeaterLevel)
+        assertTrue(air.hasOnOffSteeringHeater)
+        assertTrue(air.isSteeringHeaterOn)
+    }
+
+    @Test
+    fun rearSeatHeat_decodesFromStateAndConfig_andEncodesAllThreeRearSeats() {
+        val bytes = LucidProtobufCodec.buildLoginResponseBytesForTest(
+            uid = "uid-air",
+            idToken = "token",
+            refreshToken = "refresh",
+            gigyaJwt = "jwt",
+            expiryTimeSec = 0,
+            email = "owner@lucidmotors.com",
+            firstName = "A",
+            lastName = "B",
+            vehicleId = "veh-air",
+            vin = "50EA1GBA5NA005210",
+            nickname = "PE GT",
+            rearSeatHeatCode = 4, // SEAT_CLIMATE_MODE_MEDIUM
+            rearHeatedSeatsAvailabilityCode = 2 // SECOND_ROW_HEATED_SEATS_AVAILABLE
+        )
+        val car = LucidProtobufCodec.decodeLoginResponse(bytes, LucidRegion.US).vehicles.single()
+        assertEquals(SeatClimateMode.MEDIUM, car.rearSeatHeatMode)
+        assertTrue(car.hasHeatedRearSeats)
+
+        val withRear = LucidProtobufCodec.parseRawFields(
+            LucidProtobufCodec.encodeSeatClimateControlRequest(
+                vehicleId = "veh-air",
+                driverHeat = SeatClimateMode.OFF,
+                driverVent = SeatClimateMode.OFF,
+                passengerHeat = SeatClimateMode.OFF,
+                rearHeat = SeatClimateMode.HIGH
+            )
+        )
+        assertEquals(listOf(5L, 5L, 5L), listOf(14, 15, 16).map { withRear.getVarint(it) })
+
+        val frontOnly = LucidProtobufCodec.parseRawFields(
+            LucidProtobufCodec.encodeSeatClimateControlRequest(
+                vehicleId = "veh-air",
+                driverHeat = SeatClimateMode.LOW,
+                driverVent = SeatClimateMode.OFF,
+                passengerHeat = SeatClimateMode.OFF
+            )
+        )
+        assertTrue(listOf(14, 15, 16).all { frontOnly.varints[it] == null })
+        // Passenger cooling is left unchanged unless given
+        assertTrue(listOf(12, 13).all { frontOnly.varints[it] == null })
+    }
+
+    @Test
+    fun seatCooling_decodesPassengerVentAndConfig_andEncodesBothPassengerVentZones() {
+        val bytes = LucidProtobufCodec.buildLoginResponseBytesForTest(
+            uid = "uid-air",
+            idToken = "token",
+            refreshToken = "refresh",
+            gigyaJwt = "jwt",
+            expiryTimeSec = 0,
+            email = "owner@lucidmotors.com",
+            firstName = "A",
+            lastName = "B",
+            vehicleId = "veh-air",
+            vin = "50EA1GBA5NA005210",
+            nickname = "PE GT",
+            passengerSeatVentCode = 5, // SEAT_CLIMATE_MODE_HIGH
+            frontVentilationAvailabilityCode = 2 // FRONT_SEATS_VENTILATION_AVAILABLE
+        )
+        val car = LucidProtobufCodec.decodeLoginResponse(bytes, LucidRegion.US).vehicles.single()
+        assertEquals(SeatClimateMode.HIGH, car.passengerSeatVentMode)
+        assertTrue(car.hasVentilatedFrontSeats)
+        assertTrue(car.showsSeatCooling)
+
+        val request = LucidProtobufCodec.parseRawFields(
+            LucidProtobufCodec.encodeSeatClimateControlRequest(
+                vehicleId = "veh-air",
+                driverHeat = SeatClimateMode.OFF,
+                driverVent = SeatClimateMode.MEDIUM,
+                passengerHeat = SeatClimateMode.OFF,
+                passengerVent = SeatClimateMode.LOW
+            )
+        )
+        assertEquals(listOf(4L, 4L), listOf(6, 7).map { request.getVarint(it) }) // driver backrest + cushion
+        assertEquals(listOf(3L, 3L), listOf(12, 13).map { request.getVarint(it) }) // passenger backrest + cushion
     }
 
     @Test
@@ -303,6 +408,53 @@ class LucidProtobufCodecTest {
         assertEquals(LockState.UNLOCKED, decoded.lockState)
         assertEquals(DoorState.OPEN, decoded.frunkState)
         assertEquals(66.0, decoded.batteryPercent, 0.01)
+
+        // AC current limit (charge rate)
+        assertEquals(
+            80,
+            LucidProtobufCodec.decodeGetVehicleStateResponse(
+                LucidProtobufCodec.buildGetVehicleStateResponseBytesForTest(vehicleId = "v-1", acCurrentLimitAmps = 80),
+                decoded
+            ).acCurrentLimitAmps
+        )
+        assertArrayEquals(
+            byteArrayOf(0x08, 0x28, 0x12, 0x03) + "v-1".toByteArray(),
+            LucidProtobufCodec.encodeSetAcCurrentLimitRequest("v-1", amps = 40)
+        )
+
+        // Window positions: closed vs vented
+        assertFalse(
+            LucidProtobufCodec.decodeGetVehicleStateResponse(
+                LucidProtobufCodec.buildGetVehicleStateResponseBytesForTest(vehicleId = "v-1", windowStatusCode = 1),
+                decoded
+            ).windowsOpen
+        )
+        assertTrue(
+            LucidProtobufCodec.decodeGetVehicleStateResponse(
+                LucidProtobufCodec.buildGetVehicleStateResponseBytesForTest(vehicleId = "v-1", windowStatusCode = 12),
+                decoded
+            ).windowsOpen
+        )
+        assertArrayEquals(
+            byteArrayOf(0x08, 0x03, 0x12, 0x03) + "v-1".toByteArray(),
+            LucidProtobufCodec.encodeAllWindowControlRequest("v-1", vent = true)
+        )
+        assertArrayEquals(
+            byteArrayOf(0x08, 0x02, 0x12, 0x03) + "v-1".toByteArray(),
+            LucidProtobufCodec.encodeAllWindowControlRequest("v-1", vent = false)
+        )
+
+        // A waking Air reported the cabin at 329.4 °C: the previous reading is kept instead
+        val glitch = LucidProtobufCodec.decodeGetVehicleStateResponse(
+            LucidProtobufCodec.buildGetVehicleStateResponseBytesForTest(
+                vehicleId = "v-1",
+                interiorTempC = 329.4,
+                exteriorTempC = 15.4
+            ),
+            decoded.copy(interiorTempCelsius = 18.9)
+        )
+        assertEquals(18.9, glitch.interiorTempCelsius, 0.01)
+        assertEquals(15.4, glitch.exteriorTempCelsius, 0.01)
 
         // A waking car's partial report (power + body only) keeps the other sections' values
         val partialState = LucidProtobufCodec.ProtoWriter().apply {

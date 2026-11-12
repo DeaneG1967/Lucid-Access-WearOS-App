@@ -37,8 +37,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.Watch
 import androidx.compose.material3.Button
@@ -61,6 +59,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -74,6 +73,8 @@ import androidx.compose.ui.unit.sp
 import com.droid.lucidgravitywatch.R
 import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
+import com.droid.lucidgravitywatch.model.ClimateSeat
+import com.droid.lucidgravitywatch.model.SeatClimateKind
 import com.droid.lucidgravitywatch.model.LockState
 import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.VehicleModel
@@ -89,7 +90,7 @@ import com.droid.lucidgravitywatch.theme.StealthCard
 import com.droid.lucidgravitywatch.theme.StealthSurface
 import com.droid.lucidgravitywatch.viewmodel.GravityWatchUiState
 import com.droid.lucidgravitywatch.viewmodel.GravityWatchViewModel
-import com.droid.lucidgravitywatch.viewmodel.WatchDialPage
+import com.droid.lucidgravitywatch.viewmodel.WatchPage
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
@@ -100,7 +101,7 @@ fun GravityWatchApp(viewModel: GravityWatchViewModel) {
         uiState = uiState,
         onSelectRegion = viewModel::selectRegion,
         onLogin = viewModel::login,
-        onSelectDialPage = viewModel::selectDialPage,
+        onOpenPage = viewModel::openPage,
         onToggleTemperatureUnit = viewModel::toggleTemperatureUnit,
         onToggleWatchBezelFrame = viewModel::toggleWatchBezelFrame,
         onRefresh = viewModel::refreshVehicles,
@@ -110,12 +111,15 @@ fun GravityWatchApp(viewModel: GravityWatchViewModel) {
         onToggleRearTrunk = viewModel::toggleRearTrunk,
         onToggleChargePort = viewModel::toggleChargePort,
         onToggleClimatePrecondition = viewModel::toggleClimatePrecondition,
-        onAdjustTemperature = viewModel::adjustTargetTemperature,
+        onSetTargetTemperature = viewModel::setCabinTargetTemperature,
         onToggleDefrost = viewModel::toggleDefrost,
-        onCycleDriverSeatHeat = viewModel::cycleDriverSeatHeat,
-        onCycleSteeringHeater = viewModel::cycleSteeringWheelHeater,
+        onToggleMaxAc = viewModel::toggleMaxAc,
+        onSetAllWindows = viewModel::setAllWindows,
+        onTapSeat = viewModel::tapSeat,
+        onTapSteeringWheel = viewModel::tapSteeringWheel,
         onToggleBatteryPrecon = viewModel::toggleBatteryPreconditioning,
         onSetChargeLimit = viewModel::setChargeLimit,
+        onSetChargeCurrentLimit = viewModel::setChargeCurrentLimit,
         onToggleCharging = viewModel::toggleCharging,
         onStopCharging = viewModel::stopCharging,
         onFlashLights = viewModel::flashLights,
@@ -132,7 +136,7 @@ fun GravityWatchScreen(
     uiState: GravityWatchUiState,
     onSelectRegion: (LucidRegion) -> Unit,
     onLogin: (String, String, LucidRegion) -> Unit,
-    onSelectDialPage: (WatchDialPage) -> Unit = {},
+    onOpenPage: (WatchPage) -> Unit = {},
     onToggleTemperatureUnit: () -> Unit = {},
     onToggleWatchBezelFrame: () -> Unit = {},
     onRefresh: () -> Unit = {},
@@ -142,12 +146,15 @@ fun GravityWatchScreen(
     onToggleRearTrunk: () -> Unit = {},
     onToggleChargePort: () -> Unit = {},
     onToggleClimatePrecondition: () -> Unit = {},
-    onAdjustTemperature: (Double) -> Unit = {},
+    onSetTargetTemperature: (Double) -> Unit = {},
     onToggleDefrost: () -> Unit = {},
-    onCycleDriverSeatHeat: () -> Unit = {},
-    onCycleSteeringHeater: () -> Unit = {},
+    onToggleMaxAc: () -> Unit = {},
+    onSetAllWindows: (Boolean) -> Unit = {},
+    onTapSeat: (ClimateSeat, SeatClimateKind) -> Unit = { _, _ -> },
+    onTapSteeringWheel: () -> Unit = {},
     onToggleBatteryPrecon: () -> Unit = {},
     onSetChargeLimit: (Int) -> Unit = {},
+    onSetChargeCurrentLimit: (Int) -> Unit = {},
     onToggleCharging: () -> Unit = {},
     onStopCharging: () -> Unit = {},
     onFlashLights: () -> Unit = {},
@@ -219,19 +226,70 @@ fun GravityWatchScreen(
                         onCancel = onCancelVehicleSelection
                     )
                 } else {
-                    SimplifiedWatchDashboard(
-                        uiState = uiState,
-                        vehicle = activeVehicle,
-                        onRefresh = onRefresh,
-                        onOpenVehicleSelector = onOpenVehicleSelector,
-                        onToggleFrunk = onToggleFrunk,
-                        onToggleLock = onToggleLock,
-                        onToggleRearTrunk = onToggleRearTrunk,
-                        onStopCharging = onStopCharging,
-                        onHonkHorn = onHonkHorn,
-                        onFlashLights = onFlashLights,
-                        onLogout = onLogout
-                    )
+                    val dashboard: @Composable () -> Unit = {
+                        SimplifiedWatchDashboard(
+                            uiState = uiState,
+                            vehicle = activeVehicle,
+                            onRefresh = onRefresh,
+                            onOpenVehicleSelector = onOpenVehicleSelector,
+                            onToggleFrunk = onToggleFrunk,
+                            onToggleLock = onToggleLock,
+                            onToggleRearTrunk = onToggleRearTrunk,
+                            onStopCharging = onStopCharging,
+                            onOpenPage = onOpenPage,
+                            onLogout = onLogout
+                        )
+                    }
+                    // Drill-down pages need a vehicle; without one the dashboard shows its
+                    // "Contacting Cloud..." state instead.
+                    val page = if (activeVehicle == null) WatchPage.HOME else uiState.currentPage
+                    val climatePage: @Composable () -> Unit = {
+                        ClimatePage(
+                            uiState = uiState,
+                            vehicle = activeVehicle!!,
+                            onToggleClimate = onToggleClimatePrecondition,
+                            onSetTargetTemperature = onSetTargetTemperature,
+                            onToggleDefrost = onToggleDefrost,
+                            onToggleMaxAc = onToggleMaxAc,
+                            onSetAllWindows = onSetAllWindows,
+                            onOpenPage = onOpenPage,
+                            onToggleTemperatureUnit = onToggleTemperatureUnit
+                        )
+                    }
+                    if (page == WatchPage.HOME) {
+                        dashboard()
+                    } else {
+                        SwipeBackBox(
+                            pageKey = page,
+                            onBack = { onOpenPage(page.parent) },
+                            background = if (page.parent == WatchPage.CLIMATE) climatePage else dashboard
+                        ) {
+                            when (page) {
+                                WatchPage.CLIMATE -> climatePage()
+                                WatchPage.SEAT_HEAT, WatchPage.SEAT_COOLING -> SeatClimatePage(
+                                    uiState = uiState,
+                                    vehicle = activeVehicle!!,
+                                    kind = if (page == WatchPage.SEAT_HEAT) SeatClimateKind.HEAT else SeatClimateKind.COOL,
+                                    onTapSeat = onTapSeat,
+                                    onTapSteeringWheel = onTapSteeringWheel
+                                )
+                                WatchPage.CHARGING -> ChargingPage(
+                                    uiState = uiState,
+                                    vehicle = activeVehicle!!,
+                                    onSetChargeLimit = onSetChargeLimit,
+                                    onSetChargeCurrentLimit = onSetChargeCurrentLimit,
+                                    onToggleCharging = onToggleCharging,
+                                    onToggleChargePort = onToggleChargePort
+                                )
+                                WatchPage.FLONK -> FlonkPage(
+                                    uiState = uiState,
+                                    onHonkHorn = onHonkHorn,
+                                    onFlashLights = onFlashLights
+                                )
+                                WatchPage.HOME -> Unit
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -321,6 +379,77 @@ private fun LucidWatchLoginView(
     var isPasswordStep by rememberSaveable { mutableStateOf(false) }
     var localError by rememberSaveable { mutableStateOf<String?>(null) }
 
+    val backToEmail = {
+        localError = null
+        isPasswordStep = false
+    }
+    if (isPasswordStep) {
+        // Swipe right (or back) on the password step returns to email entry.
+        SwipeBackBox(
+            pageKey = "login_password",
+            onBack = backToEmail,
+            background = {
+                LoginForm(uiState, false, email, password, localError, onSelectRegion, {}, {}, {})
+            }
+        ) {
+            LoginForm(
+                uiState = uiState,
+                showPassword = true,
+                email = email,
+                password = password,
+                localError = localError,
+                onSelectRegion = onSelectRegion,
+                onEmailEntered = {},
+                onPasswordEntered = { entered ->
+                    password = entered.replace("\n", "")
+                    if (!uiState.isLoading) {
+                        if (password.isEmpty()) {
+                            localError = "Enter your Lucid account password"
+                        } else {
+                            localError = null
+                            onLogin(email.trim(), password, uiState.selectedRegion)
+                        }
+                    }
+                },
+                onEditEmail = backToEmail
+            )
+        }
+    } else {
+        LoginForm(
+            uiState = uiState,
+            showPassword = false,
+            email = email,
+            password = password,
+            localError = localError,
+            onSelectRegion = onSelectRegion,
+            onEmailEntered = { entered ->
+                email = entered.trim()
+                if (email.isBlank()) {
+                    localError = "Enter your Lucid account email"
+                } else {
+                    localError = null
+                    isPasswordStep = true
+                }
+            },
+            onPasswordEntered = {},
+            onEditEmail = {}
+        )
+    }
+}
+
+/** One step of sign-in: email entry, or password entry for the email shown above it. */
+@Composable
+private fun LoginForm(
+    uiState: GravityWatchUiState,
+    showPassword: Boolean,
+    email: String,
+    password: String,
+    localError: String?,
+    onSelectRegion: (LucidRegion) -> Unit,
+    onEmailEntered: (String) -> Unit,
+    onPasswordEntered: (String) -> Unit,
+    onEditEmail: () -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -355,15 +484,7 @@ private fun LucidWatchLoginView(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        if (!isPasswordStep) {
-            val acceptEmail = {
-                if (email.isBlank()) {
-                    localError = "Enter your Lucid account email"
-                } else {
-                    localError = null
-                    isPasswordStep = true
-                }
-            }
+        if (!showPassword) {
             // Wear keyboards run full-screen; a phone-style TextField loses sync with them,
             // so text entry goes through the system RemoteInput activity instead.
             WatchTextEntryField(
@@ -372,10 +493,7 @@ private fun LucidWatchLoginView(
                 inputKey = LOGIN_EMAIL_INPUT_KEY,
                 masked = false,
                 testTag = "login_email_input",
-                onValueEntered = {
-                    email = it.trim()
-                    acceptEmail()
-                }
+                onValueEntered = onEmailEntered
             )
 
             val displayedError = localError ?: uiState.errorMessage
@@ -390,16 +508,6 @@ private fun LucidWatchLoginView(
                 )
             }
         } else {
-            val submitPassword = {
-                if (!uiState.isLoading) {
-                    if (password.isEmpty()) {
-                        localError = "Enter your Lucid account password"
-                    } else {
-                        localError = null
-                        onLogin(email.trim(), password, uiState.selectedRegion)
-                    }
-                }
-            }
             Text(
                 text = email,
                 color = LucidSilver,
@@ -407,10 +515,7 @@ private fun LucidWatchLoginView(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
-                    .clickable {
-                        localError = null
-                        isPasswordStep = false
-                    }
+                    .clickable(onClick = onEditEmail)
                     .padding(bottom = 4.dp)
                     .testTag("login_email_summary")
             )
@@ -420,10 +525,7 @@ private fun LucidWatchLoginView(
                 inputKey = LOGIN_PASSWORD_INPUT_KEY,
                 masked = true,
                 testTag = "login_password_input",
-                onValueEntered = {
-                    password = it.replace("\n", "")
-                    submitPassword()
-                }
+                onValueEntered = onPasswordEntered
             )
 
             if (uiState.isLoading) {
@@ -511,7 +613,7 @@ private fun WatchTextEntryField(
 
 private enum class PendingConfirmationAction {
     FRUNK,
-    LOCK,
+    UNLOCK,
     TRUNK,
     STOP_CHARGING
 }
@@ -523,9 +625,8 @@ private enum class PendingConfirmationAction {
  *   1. Frunk
  *   2. Door Lock/Unlock (displaying current Locked / Unlocked state)
  *   3. Trunk
- * - Second row of two icon buttons underneath:
- *   4. Horn (left)
- *   5. Lights (right)
+ * - Bottom row of three smaller buttons that open the drill-down pages:
+ *   Climate, Charging and Flonk (flash lights / honk horn)
  */
 @Composable
 private fun SimplifiedWatchDashboard(
@@ -537,8 +638,7 @@ private fun SimplifiedWatchDashboard(
     onToggleLock: () -> Unit,
     onToggleRearTrunk: () -> Unit,
     onStopCharging: () -> Unit,
-    onHonkHorn: () -> Unit,
-    onFlashLights: () -> Unit,
+    onOpenPage: (WatchPage) -> Unit,
     onLogout: () -> Unit
 ) {
     if (vehicle == null) {
@@ -746,7 +846,10 @@ private fun SimplifiedWatchDashboard(
                 isPrimaryCenter = true,
                 activeColor = Color(0xFFFFEA00),
                 inactiveColor = Color.Transparent,
-                onClick = { pendingConfirmation = PendingConfirmationAction.LOCK },
+                onClick = {
+                    // Locking is a single tap; unlocking asks first to avoid accidental unlocks.
+                    if (isLocked) pendingConfirmation = PendingConfirmationAction.UNLOCK else onToggleLock()
+                },
                 enabled = controlsEnabled,
                 testTag = "primary_lock_toggle_button"
             )
@@ -764,37 +867,41 @@ private fun SimplifiedWatchDashboard(
             )
         }
 
-        // Bottom Row: Two Icon Buttons underneath (Horn on left, Lights on right)
+        // Bottom row: drill-down pages. The outer buttons sit a little higher so the row follows
+        // the curve of a round screen. Navigation stays available while controls are frozen.
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(bottom = 6.dp + twentyPixelsInDp),
-            horizontalArrangement = Arrangement.spacedBy(26.dp, Alignment.CenterHorizontally),
-            verticalAlignment = Alignment.CenterVertically
+                .padding(bottom = 4.dp + twentyPixelsInDp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.Bottom
         ) {
-            // 4. Horn Icon Button (user's Horn.webp graphic)
-            ControlIconButton(
-                drawableRes = R.drawable.btn_horn,
-                contentDesc = "Honk Horn Button",
-                isActive = false,
-                isPrimaryCenter = false,
-                activeColor = EurekaGold,
-                onClick = onHonkHorn,
-                enabled = controlsEnabled,
-                testTag = "overview_horn_button"
+            DrilldownNavButton(
+                icon = R.drawable.nav_thermostat_24px,
+                contentDesc = "Climate",
+                isActive = vehicle.hvacPower.isActive,
+                activeColor = AuroraGreen,
+                onClick = { onOpenPage(WatchPage.CLIMATE) },
+                testTag = "nav_climate_button",
+                modifier = Modifier.padding(bottom = 10.dp)
             )
-
-            // 5. Lights Icon Button (user's Lights.webp graphic)
-            ControlIconButton(
-                drawableRes = R.drawable.btn_lights,
-                contentDesc = "Flash Lights Button",
+            DrilldownNavButton(
+                icon = R.drawable.nav_ev_station_24px,
+                contentDesc = "Charging",
+                isActive = isCharging,
+                activeColor = AuroraGreen,
+                onClick = { onOpenPage(WatchPage.CHARGING) },
+                testTag = "nav_charging_button"
+            )
+            DrilldownNavButton(
+                icon = R.drawable.nav_campaign_24px,
+                contentDesc = "Flash and Honk",
                 isActive = false,
-                isPrimaryCenter = false,
                 activeColor = EurekaGold,
-                onClick = onFlashLights,
-                enabled = controlsEnabled,
-                testTag = "overview_lights_button"
+                onClick = { onOpenPage(WatchPage.FLONK) },
+                testTag = "nav_flonk_button",
+                modifier = Modifier.padding(bottom = 10.dp)
             )
         }
 
@@ -812,93 +919,61 @@ private fun SimplifiedWatchDashboard(
             )
         }
 
-        // Confirmation Pop-up Overlay for Frunk, Door Lock/Unlock, Trunk, and Stop Charging actions
+        // Confirmation pop-up for Frunk, Unlock, Trunk, and Stop Charging actions
         val activeConfirmation = pendingConfirmation
         if (activeConfirmation != null) {
-            val promptText = when (activeConfirmation) {
-                PendingConfirmationAction.FRUNK -> if (vehicle.frunkState.isOpen) "Close Frunk?" else "Open Frunk?"
-                PendingConfirmationAction.LOCK -> if (isLocked) "Unlock Doors?" else "Lock Doors?"
-                PendingConfirmationAction.TRUNK -> if (vehicle.rearTrunkState.isOpen) "Close Trunk?" else "Open Trunk?"
-                PendingConfirmationAction.STOP_CHARGING -> "Stop Charging?"
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(ObsidianBlack.copy(alpha = 0.88f))
-                    .clickable(enabled = true, onClick = {})
-                    .testTag("confirmation_popup_overlay"),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth(0.92f)
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(StealthCard)
-                        .border(1.5.dp, EurekaGold, RoundedCornerShape(18.dp))
-                        .padding(horizontal = 14.dp, vertical = 14.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Text(
-                        text = promptText,
-                        color = LucidPlatinum,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.testTag("confirmation_prompt_text")
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterHorizontally),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(StealthSurface)
-                                .border(1.dp, StealthBorder, CircleShape)
-                                .clickable { pendingConfirmation = null }
-                                .testTag("confirmation_cancel_button"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Cancel",
-                                tint = LucidPlatinum,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(EurekaGold)
-                                .border(1.dp, EurekaGold, CircleShape)
-                                .clickable {
-                                    pendingConfirmation = null
-                                    when (activeConfirmation) {
-                                        PendingConfirmationAction.FRUNK -> onToggleFrunk()
-                                        PendingConfirmationAction.LOCK -> onToggleLock()
-                                        PendingConfirmationAction.TRUNK -> onToggleRearTrunk()
-                                        PendingConfirmationAction.STOP_CHARGING -> onStopCharging()
-                                    }
-                                }
-                                .testTag("confirmation_confirm_button"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = "Confirm",
-                                tint = ObsidianBlack,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
+            ConfirmationOverlay(
+                prompt = when (activeConfirmation) {
+                    PendingConfirmationAction.FRUNK -> if (vehicle.frunkState.isOpen) "Close Frunk?" else "Open Frunk?"
+                    PendingConfirmationAction.UNLOCK -> "Unlock Doors?"
+                    PendingConfirmationAction.TRUNK -> if (vehicle.rearTrunkState.isOpen) "Close Trunk?" else "Open Trunk?"
+                    PendingConfirmationAction.STOP_CHARGING -> "Stop Charging?"
+                },
+                onCancel = { pendingConfirmation = null },
+                onConfirm = {
+                    pendingConfirmation = null
+                    when (activeConfirmation) {
+                        PendingConfirmationAction.FRUNK -> onToggleFrunk()
+                        PendingConfirmationAction.UNLOCK -> onToggleLock()
+                        PendingConfirmationAction.TRUNK -> onToggleRearTrunk()
+                        PendingConfirmationAction.STOP_CHARGING -> onStopCharging()
                     }
                 }
-            }
+            )
         }
+    }
+}
+
+/** Small round button on the home screen that opens a drill-down page. */
+@Composable
+private fun DrilldownNavButton(
+    @DrawableRes icon: Int,
+    contentDesc: String,
+    isActive: Boolean,
+    activeColor: Color,
+    onClick: () -> Unit,
+    testTag: String,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(46.dp)
+            .clip(CircleShape)
+            .background(Color(0xFF1B1B1B))
+            .border(if (isActive) 2.dp else 1.dp, if (isActive) activeColor else StealthBorder, CircleShape)
+            .clickable(onClick = onClick)
+            .semantics { contentDescription = contentDesc }
+            .testTag(testTag),
+        contentAlignment = Alignment.Center
+    ) {
+        // Outlined Material Symbols, the same style as the lock icon, so the row reads lighter
+        // than the old filled icons.
+        Icon(
+            painter = painterResource(id = icon),
+            contentDescription = null,
+            tint = Color(0xFFDEC79B),
+            modifier = Modifier.size(26.dp)
+        )
     }
 }
 
@@ -1016,7 +1091,7 @@ private fun vehicleLastSeenText(
 }
 
 @Composable
-private fun ControlIconButton(
+internal fun ControlIconButton(
     @DrawableRes drawableRes: Int,
     contentDesc: String,
     isActive: Boolean,
@@ -1090,7 +1165,7 @@ private fun ControlIconButton(
 }
 
 @Composable
-private fun SmallChipButton(
+internal fun SmallChipButton(
     label: String,
     active: Boolean,
     onClick: () -> Unit,

@@ -13,6 +13,7 @@ import com.droid.lucidgravitywatch.model.LucidRegion
 import com.droid.lucidgravitywatch.model.LucidSession
 import com.droid.lucidgravitywatch.model.PowerState
 import com.droid.lucidgravitywatch.model.SeatClimateMode
+import com.droid.lucidgravitywatch.model.SteeringHeaterStatus
 import com.droid.lucidgravitywatch.model.SteeringWheelHeaterLevel
 import com.droid.lucidgravitywatch.model.VehicleModel
 import com.droid.lucidgravitywatch.model.WalkawayState
@@ -51,11 +52,17 @@ interface LucidVehicleRepository {
     suspend fun setChargePortState(vehicle: GravityVehicleSnapshot, doorState: DoorState): GravityVehicleSnapshot
     suspend fun setCabinTemperature(vehicle: GravityVehicleSnapshot, temperatureCelsius: Double?): GravityVehicleSnapshot
     suspend fun setDefrost(vehicle: GravityVehicleSnapshot, defrostState: DefrostState): GravityVehicleSnapshot
+    suspend fun setMaxAc(vehicle: GravityVehicleSnapshot, enabled: Boolean): GravityVehicleSnapshot
+    /** All windows to the vent position ([vent]) or closed. */
+    suspend fun setAllWindows(vehicle: GravityVehicleSnapshot, vent: Boolean): GravityVehicleSnapshot
+    /** Sets the front seats; [rearHeat] sets all rear seats, or leaves them unchanged when null. */
     suspend fun setSeatClimate(
         vehicle: GravityVehicleSnapshot,
         driverHeat: SeatClimateMode,
         driverVent: SeatClimateMode,
-        passengerHeat: SeatClimateMode
+        passengerHeat: SeatClimateMode,
+        rearHeat: SeatClimateMode? = null,
+        passengerVent: SeatClimateMode? = null
     ): GravityVehicleSnapshot
 
     suspend fun setSteeringWheelHeater(
@@ -72,6 +79,9 @@ interface LucidVehicleRepository {
         vehicle: GravityVehicleSnapshot,
         limitPercent: Int
     ): GravityVehicleSnapshot
+
+    /** AC charging current limit (charge rate) in amps. */
+    suspend fun setAcCurrentLimit(vehicle: GravityVehicleSnapshot, amps: Int): GravityVehicleSnapshot
 
     suspend fun setChargingActive(
         vehicle: GravityVehicleSnapshot,
@@ -404,6 +414,58 @@ class LucidCloudVehicleRepository(
         return updated
     }
 
+    override suspend fun setAllWindows(
+        vehicle: GravityVehicleSnapshot,
+        vent: Boolean
+    ): GravityVehicleSnapshot {
+        val session = ensureValidSession()
+        if (!isDemoSession(session)) {
+            ensureAwakeIfRequired(session, vehicle)
+            transport.unaryCall(
+                region = session.region,
+                serviceMethod = METHOD_ALL_WINDOW_CONTROL,
+                requestProtobuf = LucidProtobufCodec.encodeAllWindowControlRequest(
+                    vehicleId = vehicle.vehicleId,
+                    vent = vent
+                ),
+                bearerToken = session.idToken
+            )
+        }
+        val updated = vehicle.copy(
+            windowsOpen = vent,
+            powerState = if (vehicle.powerState.isSleeping) PowerState.CLOUD_1 else vehicle.powerState,
+            lastUpdatedMs = System.currentTimeMillis()
+        )
+        if (isDemoSession(session)) demoVehicleSnapshot = updated
+        return updated
+    }
+
+    override suspend fun setMaxAc(
+        vehicle: GravityVehicleSnapshot,
+        enabled: Boolean
+    ): GravityVehicleSnapshot {
+        val session = ensureValidSession()
+        if (!isDemoSession(session)) {
+            ensureAwakeIfRequired(session, vehicle)
+            transport.unaryCall(
+                region = session.region,
+                serviceMethod = METHOD_SET_MAX_AC,
+                requestProtobuf = LucidProtobufCodec.encodeSetMaxAcRequest(
+                    vehicleId = vehicle.vehicleId,
+                    enabled = enabled
+                ),
+                bearerToken = session.idToken
+            )
+        }
+        val updated = vehicle.copy(
+            maxAcEnabled = enabled,
+            powerState = if (vehicle.powerState.isSleeping) PowerState.CLOUD_1 else vehicle.powerState,
+            lastUpdatedMs = System.currentTimeMillis()
+        )
+        if (isDemoSession(session)) demoVehicleSnapshot = updated
+        return updated
+    }
+
     override suspend fun setDefrost(
         vehicle: GravityVehicleSnapshot,
         defrostState: DefrostState
@@ -435,7 +497,9 @@ class LucidCloudVehicleRepository(
         vehicle: GravityVehicleSnapshot,
         driverHeat: SeatClimateMode,
         driverVent: SeatClimateMode,
-        passengerHeat: SeatClimateMode
+        passengerHeat: SeatClimateMode,
+        rearHeat: SeatClimateMode?,
+        passengerVent: SeatClimateMode?
     ): GravityVehicleSnapshot {
         val session = ensureValidSession()
         if (!isDemoSession(session)) {
@@ -447,7 +511,9 @@ class LucidCloudVehicleRepository(
                     vehicleId = vehicle.vehicleId,
                     driverHeat = driverHeat,
                     driverVent = driverVent,
-                    passengerHeat = passengerHeat
+                    passengerHeat = passengerHeat,
+                    rearHeat = rearHeat,
+                    passengerVent = passengerVent
                 ),
                 bearerToken = session.idToken
             )
@@ -456,6 +522,8 @@ class LucidCloudVehicleRepository(
             driverSeatHeatMode = driverHeat,
             driverSeatVentMode = driverVent,
             passengerSeatHeatMode = passengerHeat,
+            rearSeatHeatMode = rearHeat ?: vehicle.rearSeatHeatMode,
+            passengerSeatVentMode = passengerVent ?: vehicle.passengerSeatVentMode,
             powerState = if (vehicle.powerState.isSleeping) PowerState.CLOUD_1 else vehicle.powerState,
             lastUpdatedMs = System.currentTimeMillis()
         )
@@ -481,7 +549,12 @@ class LucidCloudVehicleRepository(
             )
         }
         val updated = vehicle.copy(
-            steeringHeaterLevel = level,
+            steeringHeaterLevel = if (vehicle.hasOnOffSteeringHeater) vehicle.steeringHeaterLevel else level,
+            steeringHeaterStatus = if (level == SteeringWheelHeaterLevel.OFF) {
+                SteeringHeaterStatus.OFF
+            } else {
+                SteeringHeaterStatus.ON
+            },
             powerState = if (vehicle.powerState.isSleeping) PowerState.CLOUD_1 else vehicle.powerState,
             lastUpdatedMs = System.currentTimeMillis()
         )
@@ -508,6 +581,32 @@ class LucidCloudVehicleRepository(
         }
         val updated = vehicle.copy(
             batteryPreconStatus = status,
+            powerState = if (vehicle.powerState.isSleeping) PowerState.CLOUD_1 else vehicle.powerState,
+            lastUpdatedMs = System.currentTimeMillis()
+        )
+        if (isDemoSession(session)) demoVehicleSnapshot = updated
+        return updated
+    }
+
+    override suspend fun setAcCurrentLimit(
+        vehicle: GravityVehicleSnapshot,
+        amps: Int
+    ): GravityVehicleSnapshot {
+        val session = ensureValidSession()
+        if (!isDemoSession(session)) {
+            ensureAwakeIfRequired(session, vehicle)
+            transport.unaryCall(
+                region = session.region,
+                serviceMethod = METHOD_SET_AC_CURRENT_LIMIT,
+                requestProtobuf = LucidProtobufCodec.encodeSetAcCurrentLimitRequest(
+                    vehicleId = vehicle.vehicleId,
+                    amps = amps
+                ),
+                bearerToken = session.idToken
+            )
+        }
+        val updated = vehicle.copy(
+            sessionAcCurrentLimitAmps = amps,
             powerState = if (vehicle.powerState.isSleeping) PowerState.CLOUD_1 else vehicle.powerState,
             lastUpdatedMs = System.currentTimeMillis()
         )
@@ -659,10 +758,13 @@ class LucidCloudVehicleRepository(
         const val METHOD_CONTROL_CHARGE_PORT = "/mobilegateway.protos.VehicleStateService/ControlChargePort"
         const val METHOD_SET_CABIN_TEMPERATURE = "/mobilegateway.protos.VehicleStateService/SetCabinTemperature"
         const val METHOD_HVAC_DEFROST_CONTROL = "/mobilegateway.protos.VehicleStateService/HvacDefrostControl"
+        const val METHOD_SET_MAX_AC = "/mobilegateway.protos.VehicleStateService/SetMaxAC"
+        const val METHOD_ALL_WINDOW_CONTROL = "/mobilegateway.protos.VehicleStateService/AllWindowControl"
         const val METHOD_SEAT_CLIMATE_CONTROL = "/mobilegateway.protos.VehicleStateService/SeatClimateControl"
         const val METHOD_STEERING_WHEEL_HEATER = "/mobilegateway.protos.VehicleStateService/SteeringWheelHeater"
         const val METHOD_SET_BATTERY_PRECON = "/mobilegateway.protos.VehicleStateService/SetBatteryPrecon"
         const val METHOD_SET_CHARGE_LIMIT = "/mobilegateway.protos.VehicleStateService/SetChargeLimit"
+        const val METHOD_SET_AC_CURRENT_LIMIT = "/mobilegateway.protos.VehicleStateService/SetACCurrLimit"
         const val METHOD_CHARGE_CONTROL = "/mobilegateway.protos.VehicleStateService/ChargeControl"
         const val METHOD_LIGHTS_CONTROL = "/mobilegateway.protos.VehicleStateService/LightsControl"
         const val METHOD_HONK_HORN = "/mobilegateway.protos.VehicleStateService/HonkHorn"

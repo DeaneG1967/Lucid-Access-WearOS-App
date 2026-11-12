@@ -1,0 +1,21 @@
+<!-- Car side window with an up/down arrow: all windows vent/close. Line style to match the
+     outlined Material Symbols used beside it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- Window glass: slanted front edge, like a car's side window -->
+    <path
+        android:pathData="M3,18 L3,11 L9,5 L21,5 L21,18 Z"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineJoin="round" />
+    <!-- Up/down arrow -->
+    <path
+        android:pathData="M14,8 L14,15.5 M11.5,10.2 L14,7.7 L16.5,10.2 M11.5,13.3 L14,15.8 L16.5,13.3"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+</vector>
