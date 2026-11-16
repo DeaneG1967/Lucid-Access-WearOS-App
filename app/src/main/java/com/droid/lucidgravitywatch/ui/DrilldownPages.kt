@@ -75,6 +75,7 @@ import androidx.wear.compose.foundation.lazy.ScalingLazyColumn
 import androidx.wear.compose.foundation.lazy.ScalingLazyListScope
 import androidx.wear.compose.foundation.lazy.rememberScalingLazyListState
 import com.droid.lucidgravitywatch.R
+import com.droid.lucidgravitywatch.model.DoorState
 import com.droid.lucidgravitywatch.model.ChargeState
 import com.droid.lucidgravitywatch.model.GravityVehicleSnapshot
 import com.droid.lucidgravitywatch.model.ClimateSeat
@@ -446,6 +447,7 @@ internal fun ChargingPage(
                     // Gravity's port door is manual: show its state without offering a command.
                     ChargePortPill(
                         open = vehicle.chargePortState.isOpen,
+                        known = vehicle.chargePortState != DoorState.UNKNOWN,
                         enabled = controlsEnabled,
                         onClick = onToggleChargePort.takeIf { vehicle.hasPoweredChargePortDoor }
                     )
@@ -661,12 +663,19 @@ private fun ChargingSessionPill(charging: Boolean, starting: Boolean, enabled: B
 /**
  * Charge port (only offered unplugged), styled apart like the windows pill: amber "Port Open" while
  * open. With no [onClick] (a car with a manual port door) it is a read-only status: "Port Closed"
- * or "Port Open", never dimmed by locked controls, since there is nothing to press.
+ * or "Port Open", never dimmed by locked controls, since there is nothing to press. When the car
+ * hasn't reported the port's state ([known] false) the read-only status is a dimmed "Port --".
  */
 @Composable
-private fun ChargePortPill(open: Boolean, enabled: Boolean, onClick: (() -> Unit)?) = key(enabled, open) {
+private fun ChargePortPill(
+    open: Boolean,
+    enabled: Boolean,
+    onClick: (() -> Unit)?,
+    known: Boolean = true
+) = key(enabled, open, known) {
     val readOnly = onClick == null
-    val shown = enabled || readOnly
+    val unknown = readOnly && !known
+    val shown = (enabled || readOnly) && !unknown
     val shape = RoundedCornerShape(18.dp)
     val color = (if (open) StatusYellow else LucidPlatinum).dimmedUnless(shown)
     Row(
@@ -676,7 +685,13 @@ private fun ChargePortPill(open: Boolean, enabled: Boolean, onClick: (() -> Unit
             .border(1.dp, (if (open) StatusYellow else StealthBorder).dimmedUnless(shown), shape)
             .then(if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier)
             .padding(horizontal = 14.dp)
-            .semantics { contentDescription = if (open) "Charge port open" else "Charge port closed" }
+            .semantics {
+                contentDescription = when {
+                    unknown -> "Charge port state unknown"
+                    open -> "Charge port open"
+                    else -> "Charge port closed"
+                }
+            }
             .testTag(if (readOnly) "charging_port_status" else "charging_port_toggle"),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -689,6 +704,7 @@ private fun ChargePortPill(open: Boolean, enabled: Boolean, onClick: (() -> Unit
         )
         Text(
             text = when {
+                unknown -> "Port --"
                 open -> "Port Open"
                 readOnly -> "Port Closed"
                 else -> "Port"

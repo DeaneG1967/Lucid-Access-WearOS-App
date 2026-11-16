@@ -167,6 +167,8 @@ class GravityWatchViewModel(
         const val FAST_POLL_WINDOW_MS = 10_000L
         /** Longest fast polling while waiting for a started charge to begin (see [pollFastUntil]). */
         const val CHARGE_START_FAST_POLL_MAX_MS = 120_000L
+        /** Longest fast polling while a waking Gravity's reports settle (see [WakeSettleTracker]). */
+        const val WAKE_SETTLE_MAX_MS = 20_000L
         /** How long polling stays at [RATE_LIMITED_POLL_INTERVAL_MS] after a rate-limit error. */
         const val RATE_LIMIT_BACKOFF_MS = 60_000L
         const val STATE_CONFIRMATION_TIMEOUT_MS = 45_000L
@@ -225,6 +227,9 @@ class GravityWatchViewModel(
      */
     private var fastPollUntil: ((GravityVehicleSnapshot) -> Boolean)? = null
     private var fastPollUntilJob: Job? = null
+    /** Smooths a waking Gravity's placeholder reports; polling stays fast while it settles. */
+    private val wakeSettle = WakeSettleTracker()
+    private var wakeSettleCapJob: Job? = null
     /** Sends the seat draft once taps settle. */
     private var seatSendJob: Job? = null
     /** True once the seat draft has been sent; it is then kept until the command settles. */
@@ -334,8 +339,8 @@ class GravityWatchViewModel(
     private fun resolvePollIntervalMs(): Long = when {
         rateLimitBackoffJob?.isActive == true -> RATE_LIMITED_POLL_INTERVAL_MS
         !_uiState.value.isInteractive -> AMBIENT_POLL_INTERVAL_MS
-        fastPollWindowJob?.isActive == true || fastPollUntil != null || _uiState.value.isWakingVehicle ->
-            FAST_POLL_INTERVAL_MS
+        fastPollWindowJob?.isActive == true || fastPollUntil != null || _uiState.value.isWakingVehicle ||
+            wakeSettle.isSettling -> FAST_POLL_INTERVAL_MS
         else -> IDLE_POLL_INTERVAL_MS
     }
 
@@ -435,19 +440,24 @@ class GravityWatchViewModel(
     private suspend fun fetchAndApplyVehicleState(source: String, refreshVehicleList: Boolean = false): Boolean {
         try {
             val activeVehicle = _uiState.value.activeVehicle
-            val vehicles = if (activeVehicle != null && !refreshVehicleList) {
-                val updated = repository.fetchVehicleState(activeVehicle)
+            val fetched = if (activeVehicle != null && !refreshVehicleList) {
+                // Fields a response leaves out are filled from the car's last report as received,
+                // not from what is displayed (which may be a held port state).
+                val base = wakeSettle.lastRawReport(activeVehicle.vehicleId) ?: activeVehicle
+                val updated = repository.fetchVehicleState(base)
                 _uiState.value.vehicles.map { if (it.vehicleId == updated.vehicleId) updated else it }
             } else {
                 repository.fetchVehicles()
             }
-            val selectedId = resolveSelectedVehicleId(vehicles)
-            val polledVehicle = vehicles.firstOrNull { it.vehicleId == selectedId }
+            val selectedId = resolveSelectedVehicleId(fetched)
+            val rawPolledVehicle = fetched.firstOrNull { it.vehicleId == selectedId }
 
             Log.i(
                 TAG,
-                "$source: ${polledVehicle?.describeState() ?: "no vehicle selected (${vehicles.size} on account)"}"
+                "$source: ${rawPolledVehicle?.describeState() ?: "no vehicle selected (${fetched.size} on account)"}"
             )
+            val polledVehicle = rawPolledVehicle?.let { settleWake(it) }
+            val vehicles = fetched.replacing(polledVehicle)
             if (polledVehicle != null) {
                 reconcileExpectedChanges(polledVehicle)
                 if (fastPollUntil?.invoke(polledVehicle) == true) stopFastPollUntil("reached")
@@ -571,6 +581,41 @@ class GravityWatchViewModel(
         lastNewReportElapsedMs = 0L
     }
 
+    /** Forgets wake settling; [WakeSettleTracker] also starts over by itself when the car changes. */
+    private fun resetWakeSettle() {
+        wakeSettle.reset()
+        wakeSettleCapJob?.cancel()
+        wakeSettleCapJob = null
+    }
+
+    /**
+     * Runs [raw] through [wakeSettle] and returns what to display. While a waking Gravity settles,
+     * polling stays at [FAST_POLL_INTERVAL_MS], for at most [WAKE_SETTLE_MAX_MS].
+     */
+    private fun settleWake(raw: GravityVehicleSnapshot): GravityVehicleSnapshot {
+        val wasSettling = wakeSettle.isSettling
+        val result = wakeSettle.apply(raw)
+        result.event?.let { Log.i(TAG, "${raw.nickname} $it") }
+        if (wakeSettle.isSettling && !wasSettling) {
+            wakeSettleCapJob?.cancel()
+            wakeSettleCapJob = viewModelScope.launch {
+                delay(WAKE_SETTLE_MAX_MS)
+                if (wakeSettle.isSettling) {
+                    Log.i(TAG, "${raw.nickname} still settling after ${WAKE_SETTLE_MAX_MS / 1000}s; showing reports as received")
+                    wakeSettle.endSettling()
+                    _uiState.update { it.copy(currentPollIntervalMs = resolvePollIntervalMs()) }
+                }
+            }
+        } else if (!wakeSettle.isSettling) {
+            wakeSettleCapJob?.cancel()
+            wakeSettleCapJob = null
+        }
+        return result.shown
+    }
+
+    private fun List<GravityVehicleSnapshot>.replacing(vehicle: GravityVehicleSnapshot?): List<GravityVehicleSnapshot> =
+        if (vehicle == null) this else map { if (it.vehicleId == vehicle.vehicleId) vehicle else it }
+
     private fun reconcileExpectedChanges(polledVehicle: GravityVehicleSnapshot) {
         if (expectedLockState != null && polledVehicle.lockState == expectedLockState) {
             Log.i(TAG, "Confirmed by car: doors ${polledVehicle.lockState.displayName}")
@@ -682,11 +727,13 @@ class GravityWatchViewModel(
             }
             runCatching {
                 repository.login(email.trim(), password, region)
-            }.onSuccess { vehicles ->
+            }.onSuccess { signedInVehicles ->
                 val session = repository.getActiveSession()
-                val preferredId = resolveSelectedVehicleId(vehicles)
-                val preferredVehicle = vehicles.firstOrNull { v -> v.vehicleId == preferredId }
-                Log.i(TAG, "Signed in; ${vehicles.size} vehicle(s): ${preferredVehicle?.describeState()}")
+                val preferredId = resolveSelectedVehicleId(signedInVehicles)
+                val rawPreferred = signedInVehicles.firstOrNull { v -> v.vehicleId == preferredId }
+                Log.i(TAG, "Signed in; ${signedInVehicles.size} vehicle(s): ${rawPreferred?.describeState()}")
+                val preferredVehicle = rawPreferred?.let { settleWake(it) }
+                val vehicles = signedInVehicles.replacing(preferredVehicle)
                 _uiState.update {
                     it.copy(
                         isAuthenticated = true,
@@ -772,6 +819,7 @@ class GravityWatchViewModel(
             stopFastPollUntil("vehicle changed")
             awaitingPostCommandPoll = false
             resetReportTracking()
+            resetWakeSettle()
             _uiState.update {
                 it.copy(isWakingVehicle = false, awaitingVehicleStateLabel = null, hasLiveReports = false)
             }
@@ -1336,6 +1384,7 @@ class GravityWatchViewModel(
         stopFastPollUntil("signed out")
         awaitingPostCommandPoll = false
         resetReportTracking()
+        resetWakeSettle()
         repository.logout()
         _uiState.value = GravityWatchUiState(
             isInteractive = _uiState.value.isInteractive,
