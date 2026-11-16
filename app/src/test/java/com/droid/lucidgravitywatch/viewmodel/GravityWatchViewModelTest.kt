@@ -801,6 +801,41 @@ class GravityWatchViewModelTest {
     }
 
     @Test
+    fun vehicleSelector_doesNotRefetchVehicleList_whileWaitingForAChoice() = runTest {
+        // Found during the Apple Watch port: the selector re-fetched GetUserVehicles every poll
+        val repo = FakeLucidVehicleRepository().apply {
+            currentSelectedVehicleId = null
+            snapshot = snapshot.copy(powerState = PowerState.CLOUD_1)
+            extraVehicles = listOf(
+                snapshot.copy(vehicleId = "veh-air-02", nickname = "PE GT", model = VehicleModel.AIR)
+            )
+        }
+        repo.login("owner@lucidmotors.com", "password123", LucidRegion.US) // saved session
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        try {
+            viewModel.setInteractivePowerState(true)
+            runCurrent()
+            assertTrue(viewModel.uiState.value.needsVehicleSelection)
+            assertEquals(1, repo.fetchVehiclesCount)
+
+            // A minute on the selector: no more list fetches, and no car to poll
+            advanceTimeBy(60_000L)
+            runCurrent()
+            assertEquals(1, repo.fetchVehiclesCount)
+            assertEquals(0, repo.fetchStateCount)
+
+            // Picking a car starts polling that car's state
+            viewModel.selectVehicle("veh-air-02")
+            advanceTimeBy(GravityWatchViewModel.IDLE_POLL_INTERVAL_MS)
+            runCurrent()
+            assertEquals(1, repo.fetchVehiclesCount)
+            assertTrue(repo.fetchStateCount >= 1)
+        } finally {
+            viewModel.suspendPolling()
+        }
+    }
+
+    @Test
     fun interactivePolling_wakesSleepingCar_pollsFastAfterCommand_slowsInAmbient_andStopsWhenSuspended() = runTest {
         val repo = FakeLucidVehicleRepository().apply {
             deferCloudStateUpdateOnCommand = true

@@ -415,6 +415,10 @@ class GravityWatchViewModel(
             pendingList.join()
             return
         }
+        // With no car chosen (the vehicle selector on a multi-car account) there is nothing to poll,
+        // and the list will not change while the user picks. Polling it every few seconds would
+        // overrun GetUserVehicles' limit, so the list is only fetched again if the last fetch failed.
+        if (_uiState.value.activeVehicle == null && _uiState.value.hasFreshTelemetry) return
 
         val showYellowDot = _uiState.value.isInteractive
         _uiState.update { it.copy(isPolling = showYellowDot) }
