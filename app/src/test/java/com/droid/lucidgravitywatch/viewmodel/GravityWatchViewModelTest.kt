@@ -1293,6 +1293,98 @@ class GravityWatchViewModelTest {
         }
     }
 
+    /** Dean's 12:14 wake: state 12 then MONITOR, with a false port OPEN for ~7 s of report time. */
+    @Test
+    fun gravityWake_keepsPollingFastAndPortClosedUntilReportsSettle() = runTest {
+        val repo = FakeLucidVehicleRepository().apply {
+            snapshot = snapshot.copy(
+                powerState = PowerState.SLEEP,
+                frunkState = DoorState.UNKNOWN,
+                rearTrunkState = DoorState.UNKNOWN,
+                chargePortState = DoorState.CLOSED,
+                chargeState = ChargeState.NOT_CONNECTED
+            )
+            wakeHasNoEffect = true
+        }
+        val wakeMs = repo.snapshot.lastUpdatedMs + 200_000L
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+        viewModel.setInteractivePowerState(true)
+        try {
+            runCurrent()
+            assertEquals(1, repo.wakeCount)
+            assertEquals(GravityWatchViewModel.FAST_POLL_INTERVAL_MS, viewModel.uiState.value.currentPollIntervalMs)
+
+            fun step(power: PowerState, frunk: DoorState, trunk: DoorState, port: DoorState, atMs: Long) {
+                repo.snapshot = repo.snapshot.copy(
+                    powerState = power,
+                    powerStateCode = power.protoValue,
+                    frunkState = frunk,
+                    rearTrunkState = trunk,
+                    chargePortState = port,
+                    lastUpdatedMs = wakeMs + atMs
+                )
+                advanceTimeBy(GravityWatchViewModel.FAST_POLL_INTERVAL_MS)
+                runCurrent()
+            }
+
+            // State 12 is "awake", which used to end fast polling; the OPEN is a placeholder
+            step(PowerState.UNDOCUMENTED_12, DoorState.UNKNOWN, DoorState.UNKNOWN, DoorState.OPEN, 0)
+            assertEquals(DoorState.CLOSED, viewModel.uiState.value.activeVehicle?.chargePortState)
+            assertEquals(GravityWatchViewModel.FAST_POLL_INTERVAL_MS, viewModel.uiState.value.currentPollIntervalMs)
+
+            // Frunk and trunk known, port still falsely OPEN: still held, still fast
+            step(PowerState.MONITOR, DoorState.CLOSED, DoorState.CLOSED, DoorState.OPEN, 4_088)
+            assertEquals(DoorState.CLOSED, viewModel.uiState.value.activeVehicle?.chargePortState)
+            assertEquals(GravityWatchViewModel.FAST_POLL_INTERVAL_MS, viewModel.uiState.value.currentPollIntervalMs)
+
+            // The car reports CLOSED: settled, back to the idle interval
+            step(PowerState.MONITOR, DoorState.CLOSED, DoorState.CLOSED, DoorState.CLOSED, 7_253)
+            assertEquals(DoorState.CLOSED, viewModel.uiState.value.activeVehicle?.chargePortState)
+            assertEquals(GravityWatchViewModel.IDLE_POLL_INTERVAL_MS, viewModel.uiState.value.currentPollIntervalMs)
+
+            // A port opened later is shown on the next poll
+            repo.snapshot = repo.snapshot.copy(chargePortState = DoorState.OPEN, lastUpdatedMs = wakeMs + 9_000)
+            advanceTimeBy(GravityWatchViewModel.IDLE_POLL_INTERVAL_MS)
+            runCurrent()
+            assertEquals(DoorState.OPEN, viewModel.uiState.value.activeVehicle?.chargePortState)
+        } finally {
+            viewModel.suspendPolling()
+        }
+    }
+
+    @Test
+    fun gravityWake_neverSettling_fastPollingStopsAtCap() = runTest {
+        val repo = FakeLucidVehicleRepository().apply {
+            snapshot = snapshot.copy(powerState = PowerState.SLEEP, chargeState = ChargeState.NOT_CONNECTED)
+            wakeHasNoEffect = true
+        }
+        val viewModel = GravityWatchViewModel.Factory(repo).create(GravityWatchViewModel::class.java)
+        viewModel.login("owner@lucidmotors.com", "password123", LucidRegion.US)
+        advanceUntilIdle()
+        viewModel.setInteractivePowerState(true)
+        try {
+            runCurrent()
+            // Stuck in state 12: never settles
+            repo.snapshot = repo.snapshot.copy(
+                powerState = PowerState.UNDOCUMENTED_12,
+                powerStateCode = 12,
+                chargePortState = DoorState.OPEN
+            )
+            repo.advanceReportOnStateFetchMs = 1_000L
+            advanceTimeBy(GravityWatchViewModel.FAST_POLL_INTERVAL_MS)
+            runCurrent()
+            assertEquals(GravityWatchViewModel.FAST_POLL_INTERVAL_MS, viewModel.uiState.value.currentPollIntervalMs)
+
+            advanceTimeBy(GravityWatchViewModel.WAKE_SETTLE_MAX_MS)
+            runCurrent()
+            assertEquals(GravityWatchViewModel.IDLE_POLL_INTERVAL_MS, viewModel.uiState.value.currentPollIntervalMs)
+        } finally {
+            viewModel.suspendPolling()
+        }
+    }
+
     @Test
     fun startCharging_isIgnoredWithoutChargeCable() = runTest {
         val repo = FakeLucidVehicleRepository().apply {

@@ -96,6 +96,10 @@ enum class PowerState(val protoValue: Int, val displayName: String) {
     val isAwake: Boolean
         get() = !isSleeping && this != UNKNOWN
 
+    /** Not in Lucid's published enum; 12 is the first state a waking Gravity reports. */
+    val isUndocumented: Boolean
+        get() = this == UNDOCUMENTED_12 || this == UNDOCUMENTED_13
+
     companion object {
         fun fromProto(value: Int): PowerState =
             entries.firstOrNull { it.protoValue == value } ?: UNKNOWN
