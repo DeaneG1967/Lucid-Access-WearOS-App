@@ -311,6 +311,7 @@ class GravityWatchAppUiTest {
     fun simplifiedDashboard_freezesControlsAndShowsReasonUntilCarAwakeAndStatusKnown() {
         var frunkClicked = false
         var hornClicked = false
+        val openedPages = mutableListOf<WatchPage>()
         val uiState = mutableStateOf(
             GravityWatchUiState(
                 isAuthenticated = true,
@@ -331,7 +332,8 @@ class GravityWatchAppUiTest {
                     onSelectRegion = {},
                     onLogin = { _, _, _ -> },
                     onToggleFrunk = { frunkClicked = true },
-                    onHonkHorn = { hornClicked = true }
+                    onHonkHorn = { hornClicked = true },
+                    onOpenPage = { openedPages += it }
                 )
             }
         }
@@ -339,6 +341,11 @@ class GravityWatchAppUiTest {
         composeTestRule.onNodeWithText("Waking car…").assertIsDisplayed()
         composeTestRule.onNodeWithTag("overview_frunk_button").performClick()
         composeTestRule.onNodeWithTag("confirmation_popup_overlay").assertDoesNotExist()
+        // Bottom row of navigation buttons are also frozen until controlsEnabled is true
+        composeTestRule.onNodeWithTag("nav_charging_button").performClick()
+        composeTestRule.onNodeWithTag("nav_climate_button").performClick()
+        composeTestRule.onNodeWithTag("nav_flonk_button").performClick()
+        assertTrue(openedPages.isEmpty())
         // Drill-down pages freeze their controls the same way
         showFlonk.value = true
         composeTestRule.waitForIdle()
@@ -357,6 +364,8 @@ class GravityWatchAppUiTest {
         composeTestRule.onNodeWithTag("overview_frunk_button").performClick()
         composeTestRule.onNodeWithTag("confirmation_confirm_button").performClick()
         assertTrue(frunkClicked)
+        composeTestRule.onNodeWithTag("nav_charging_button").performClick()
+        assertEquals(listOf(WatchPage.CHARGING), openedPages)
     }
 
     @Test

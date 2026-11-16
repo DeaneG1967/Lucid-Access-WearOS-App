@@ -870,7 +870,7 @@ private fun SimplifiedWatchDashboard(
         }
 
         // Bottom row: drill-down pages. The outer buttons sit a little higher so the row follows
-        // the curve of a round screen. Navigation stays available while controls are frozen.
+        // the curve of a round screen.
         val interiorTempC = vehicle.interiorTempCelsius
         val climateTempText = if (interiorTempC.isNaN()) {
             "--°"
@@ -895,6 +895,7 @@ private fun SimplifiedWatchDashboard(
                 isActive = isChargePortOpen,
                 activeColor = powerColor,
                 onClick = { onOpenPage(WatchPage.CHARGING) },
+                enabled = controlsEnabled,
                 testTag = "nav_charging_button",
                 modifier = Modifier.padding(bottom = 10.dp)
             )
@@ -904,6 +905,7 @@ private fun SimplifiedWatchDashboard(
                 isActive = vehicle.hvacPower.isActive,
                 activeColor = AuroraGreen,
                 onClick = { onOpenPage(WatchPage.CLIMATE) },
+                enabled = controlsEnabled,
                 testTag = "nav_climate_button"
             )
             DrilldownNavButton(
@@ -912,6 +914,7 @@ private fun SimplifiedWatchDashboard(
                 isActive = false,
                 activeColor = EurekaGold,
                 onClick = { onOpenPage(WatchPage.FLONK) },
+                enabled = controlsEnabled,
                 testTag = "nav_flonk_button",
                 modifier = Modifier.padding(bottom = 10.dp)
             )
@@ -964,26 +967,30 @@ private fun DrilldownNavButton(
     isActive: Boolean,
     activeColor: Color,
     onClick: () -> Unit,
+    enabled: Boolean = true,
     testTag: String,
     modifier: Modifier = Modifier
 ) {
-    Box(
-        modifier = modifier
-            .size(46.dp)
-            .clip(CircleShape)
-            .background(Color(0xFF181818))
-            .border(if (isActive) 2.dp else 1.dp, if (isActive) activeColor else StealthBorder, CircleShape)
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = contentDesc }
-            .testTag(testTag),
-        contentAlignment = Alignment.Center
-    ) {
-        Icon(
-            painter = painterResource(id = icon),
-            contentDescription = null,
-            tint = Color(0xFFB2B2B2),
-            modifier = Modifier.size(26.dp)
-        )
+    key(isActive, enabled) {
+        Box(
+            modifier = modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(Color(0xFF181818))
+                .border(if (isActive) 2.dp else 1.dp, if (isActive) activeColor else StealthBorder, CircleShape)
+                .alpha(if (enabled) 1f else 0.35f)
+                .clickable(enabled = enabled, onClick = onClick)
+                .semantics { contentDescription = contentDesc }
+                .testTag(testTag),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                painter = painterResource(id = icon),
+                contentDescription = null,
+                tint = Color(0xFFB2B2B2),
+                modifier = Modifier.size(26.dp)
+            )
+        }
     }
 }
 
@@ -1023,28 +1030,32 @@ private fun ClimateTempNavButton(
     isActive: Boolean,
     activeColor: Color,
     onClick: () -> Unit,
+    enabled: Boolean = true,
     testTag: String,
     modifier: Modifier = Modifier
 ) {
-    Box(
-        modifier = modifier
-            .size(46.dp)
-            .clip(CircleShape)
-            .background(Color(0xFF181818))
-            .border(if (isActive) 2.dp else 1.dp, if (isActive) activeColor else StealthBorder, CircleShape)
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = "Climate" }
-            .testTag(testTag),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(
-            text = temperatureText,
-            color = temperatureColor,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-            textAlign = TextAlign.Center
-        )
+    key(isActive, enabled) {
+        Box(
+            modifier = modifier
+                .size(46.dp)
+                .clip(CircleShape)
+                .background(Color(0xFF181818))
+                .border(if (isActive) 2.dp else 1.dp, if (isActive) activeColor else StealthBorder, CircleShape)
+                .alpha(if (enabled) 1f else 0.35f)
+                .clickable(enabled = enabled, onClick = onClick)
+                .semantics { contentDescription = "Climate" }
+                .testTag(testTag),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = temperatureText,
+                color = temperatureColor,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
