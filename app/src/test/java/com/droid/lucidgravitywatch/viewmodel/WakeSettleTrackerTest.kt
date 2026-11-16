@@ -85,6 +85,19 @@ class WakeSettleTrackerTest {
         )
     )
 
+    /** Port left open before sleep: the car reports OPEN throughout, with no false CLOSED. */
+    @Test
+    fun wake1343_portOpenBeforeSleep_isShownOpenThroughout() = replay(
+        listOf(
+            Step(SLEEP, UNKNOWN, UNKNOWN, OPEN, -18_383, OPEN, settling = false),
+            Step(UNDOCUMENTED_12, UNKNOWN, UNKNOWN, OPEN, 0, OPEN, settling = true),
+            Step(MONITOR, CLOSED, UNKNOWN, OPEN, 2_582, OPEN, settling = true),
+            Step(MONITOR, CLOSED, CLOSED, OPEN, 5_308, OPEN, settling = false),
+            Step(MONITOR, CLOSED, CLOSED, OPEN, 8_356, OPEN, settling = false),
+            Step(MONITOR, CLOSED, CLOSED, OPEN, 11_624, OPEN, settling = false)
+        )
+    )
+
     @Test
     fun portStillOpenAfterHoldLimit_isShown() = replay(
         listOf(
