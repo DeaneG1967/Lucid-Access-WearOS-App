@@ -10,5 +10,6 @@ There's also a tiny yellow polling status dot that appears briefly at the very b
 
 The Frunk, Door Locks, and Trunk buttons ask for user confirmation before sending their request to the cloud for safety.
 
-<img width="480" height="480" alt="watch_media_2026-10-27_15_17_21" src="https://github.com/user-attachments/assets/f9e99392-8319-49e6-aeda-0616acf512b3" />
+<img width="480" height="480" alt="Home screen v2 0 0" src="https://github.com/user-attachments/assets/5a3d8be5-a14d-451d-8135-8b9d082bc8f3" />
+
 
